@@ -1,0 +1,23 @@
+# --- Secretos (HD02 / checklist 6.3) ---
+.env
+*.key
+*.pem
+
+# --- Certificados generados en cada servidor ---
+nginx/certs/*
+!nginx/certs/.gitkeep
+certs/postgres/*
+!certs/postgres/.gitkeep
+
+# --- Datos persistentes de los contenedores ---
+volumes/
+
+# --- Respaldos de la BD ---
+backups/*
+!backups/.gitkeep
+
+# --- Sistema / editores ---
+.DS_Store
+Thumbs.db
+.vscode/
+*.log

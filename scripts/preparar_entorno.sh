@@ -29,12 +29,22 @@ else
         -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$(generar_clave)|" \
         -e "s|^AGENTE_IA_PASSWORD=.*|AGENTE_IA_PASSWORD=$(generar_clave)|" \
         -e "s|^MONITOR_N8N_PASSWORD=.*|MONITOR_N8N_PASSWORD=$(generar_clave)|" \
+        -e "s|^GERENTE_DB_PASSWORD=.*|GERENTE_DB_PASSWORD=$(generar_clave)|" \
+        -e "s|^TI_DB_PASSWORD=.*|TI_DB_PASSWORD=$(generar_clave)|" \
+        -e "s|^AUDITOR_DB_PASSWORD=.*|AUDITOR_DB_PASSWORD=$(generar_clave)|" \
         -e "s|^N8N_PASSWORD=.*|N8N_PASSWORD=$(generar_clave)Aa1|" \
         -e "s|^N8N_ENCRYPTION_KEY=.*|N8N_ENCRYPTION_KEY=$(openssl rand -hex 32)|" \
         .env.example > .env
     echo "   .env creado con contraseñas aleatorias (IP del servidor: ${IP_SERVIDOR})."
     echo "   Pendiente: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID y GROQ_API_KEY (los completa M3)."
 fi
+# Agregar variables nuevas a un .env existente (sin tocar las que ya tiene)
+for VARIABLE in AGENTE_IA_PASSWORD MONITOR_N8N_PASSWORD GERENTE_DB_PASSWORD TI_DB_PASSWORD AUDITOR_DB_PASSWORD; do
+    if ! grep -q "^${VARIABLE}=" .env; then
+        echo "${VARIABLE}=$(generar_clave)" >> .env
+        echo "   Agregada al .env: ${VARIABLE}"
+    fi
+done
 chmod 600 .env
 
 echo "== 2/4  Volúmenes =="

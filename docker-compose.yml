@@ -8,6 +8,7 @@
 #    HD03  Red Docker aislada               (nutrianimales-net)
 #    HD04  PostgreSQL sin puerto expuesto   (sin "ports:" en postgres; solo Nginx publica)
 #    HD05  scram-sha-256                    (POSTGRES_INITDB_ARGS)
+#    HD06  SSL/TLS en PostgreSQL            (ssl=on + certificado en certs/postgres)
 #    HD11  Logs de consultas lentas         (log_min_duration_statement=1000)
 # =====================================================================
 
@@ -24,8 +25,17 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"      # HD05
       TZ: ${GENERIC_TIMEZONE}
+      # Contraseñas que usa sql/05_rbac.sh al crear los usuarios (solo en la primera inicialización)
+      AGENTE_IA_PASSWORD: ${AGENTE_IA_PASSWORD}
+      MONITOR_N8N_PASSWORD: ${MONITOR_N8N_PASSWORD}
+      GERENTE_DB_PASSWORD: ${GERENTE_DB_PASSWORD}
+      TI_DB_PASSWORD: ${TI_DB_PASSWORD}
+      AUDITOR_DB_PASSWORD: ${AUDITOR_DB_PASSWORD}
     command: >
       postgres
+      -c ssl=on
+      -c ssl_cert_file=/certs/server.crt
+      -c ssl_key_file=/certs/server.key
       -c password_encryption=scram-sha-256
       -c shared_preload_libraries=pg_stat_statements
       -c pg_stat_statements.track=all
@@ -35,8 +45,6 @@ services:
       -c log_directory=log
       -c log_line_prefix='%m [%p] %u@%d %h '
       -c timezone=${GENERIC_TIMEZONE}
-    # HD06 (SSL, responsable M2): cuando existan los certificados, agregar a "command":
-    #   -c ssl=on -c ssl_cert_file=/certs/server.crt -c ssl_key_file=/certs/server.key
     volumes:
       - ./volumes/pgdata:/var/lib/postgresql/data
       - ./sql:/docker-entrypoint-initdb.d:ro
@@ -52,7 +60,7 @@ services:
 
   # ---------------------------------------------------------------- N8N
   n8n:
-    image: n8nio/n8n:latest          # fijar la versión exacta tras el primer pull (ver README)
+    image: n8nio/n8n:2.45.5          # versión fija: el ZIP final siempre levanta igual
     container_name: nutri_n8n
     restart: unless-stopped
     user: "1000:1000"                # HD01: usuario no-root

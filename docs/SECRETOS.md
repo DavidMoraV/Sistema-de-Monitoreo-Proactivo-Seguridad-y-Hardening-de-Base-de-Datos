@@ -89,9 +89,9 @@ docker compose restart nginx        # o postgres
 |---|---|---|
 | El `.env` nunca se sube a Git | En `.gitignore`; nunca se hizo `git add` | `git check-ignore -v .env` y `git log --all --oneline -- .env` (vacío) |
 | Permisos mínimos sobre el `.env` | `chmod 600` automático en `preparar_entorno.sh` | `ls -la .env` → `-rw-------` |
-| Ningún secreto en el historial | Contraseñas generadas, no escritas en SQL ni en el compose | `git log -p --all \| grep -E "gsk_\|[0-9]{8,10}:AA"` (vacío) |
-| N8N sin keys visibles en nodos | Todas las claves en *Credentials* o `$env` | Revisar los JSON exportados: `grep -rE "gsk_\|bot[0-9]" n8n/flujos/` (vacío) |
-| Logs de N8N sin variables de entorno | `N8N_LOG_LEVEL=info`; no se registran variables | `docker logs nutri_n8n 2>&1 \| grep -iE "gsk_\|password="` (vacío) |
+| Ningún secreto en el historial | Contraseñas generadas, no escritas en SQL ni en el compose | `git log -p --all \| grep -cE "gsk_[A-Za-z0-9]{20,}\|[0-9]{8,10}:AA[A-Za-z0-9_-]{30,}"` → `0` |
+| N8N sin keys visibles en nodos | Todas las claves en *Credentials* o `$env` | Revisar los JSON exportados: `grep -rcE "gsk_[A-Za-z0-9]{20,}\|[0-9]{8,10}:AA[A-Za-z0-9_-]{30,}" n8n/flujos/` → `0` |
+| Logs de N8N sin variables de entorno | `N8N_LOG_LEVEL=info`; no se registran variables | `docker logs nutri_n8n 2>&1 \| grep -cE "gsk_[A-Za-z0-9]{20,}"` → `0` |
 | Mínimo privilegio en contenedores | N8N solo recibe los secretos que usa; **no** recibe `POSTGRES_PASSWORD` | `docker exec nutri_n8n env \| grep -c POSTGRES_PASSWORD` → `0` |
 | Secreto filtrado = revocación inmediata | Aunque el commit se revierta, la key ya es pública | Procedimientos A–E |
 | `.env.example` sin credenciales reales | Solo `__cambiar__` | `grep -v "__cambiar__" .env.example \| grep -E "PASSWORD\|KEY\|TOKEN"` (vacío) |

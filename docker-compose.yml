@@ -8,8 +8,8 @@
 #    HD03  Red Docker aislada               (nutrianimales-net)
 #    HD04  PostgreSQL sin puerto expuesto   (sin "ports:" en postgres; solo Nginx publica)
 #    HD05  scram-sha-256                    (POSTGRES_INITDB_ARGS)
-#    HD06  SSL/TLS en PostgreSQL            (ssl=on + certificado en certs/postgres)
-#    HD11  Logs de consultas lentas         (log_min_duration_statement=1000)
+#    HD06  SSL/TLS en PostgreSQL            (certificado en certs/postgres; ssl=on en sql/04_baseline.sql)
+#    HD11  Logs de consultas lentas         (log_min_duration_statement=1000 en sql/04_baseline.sql)
 # =====================================================================
 
 services:
@@ -31,16 +31,13 @@ services:
       GERENTE_DB_PASSWORD: ${GERENTE_DB_PASSWORD}
       TI_DB_PASSWORD: ${TI_DB_PASSWORD}
       AUDITOR_DB_PASSWORD: ${AUDITOR_DB_PASSWORD}
+    # ssl, password_encryption, log_min_duration_statement y log_connections NO van aquí:
+    # se aplican con ALTER SYSTEM en sql/04_baseline.sql. Un "-c" tiene prioridad sobre
+    # ALTER SYSTEM, y con ellos aquí la prueba de H5 (ALTER SYSTEM ... 'md5') no surte efecto.
     command: >
       postgres
-      -c ssl=on
-      -c ssl_cert_file=/certs/server.crt
-      -c ssl_key_file=/certs/server.key
-      -c password_encryption=scram-sha-256
       -c shared_preload_libraries=pg_stat_statements
       -c pg_stat_statements.track=all
-      -c log_min_duration_statement=1000
-      -c log_connections=on
       -c logging_collector=on
       -c log_directory=log
       -c log_line_prefix='%m [%p] %u@%d %h '

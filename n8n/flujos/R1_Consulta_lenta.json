@@ -13,7 +13,7 @@
           ]
         }
       },
-      "id": "d812f128-02cd-4ca9-b720-6f2dd5c43090",
+      "id": "3ed726e6-cbc0-49d9-9dfd-55c160ac719e",
       "name": "Cada 1 minuto",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
@@ -25,10 +25,10 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT s.queryid::text AS queryid,\n       left(s.query, 300)       AS query,\n       s.calls,\n       s.total_exec_time,\n       round(s.mean_exec_time)  AS ms,\n       r.rolname                AS usuario\nFROM pg_stat_statements s\nLEFT JOIN pg_roles r ON r.oid = s.userid\nWHERE s.max_exec_time > 1000\n  AND s.query NOT ILIKE '%pg_stat_statements%'\nORDER BY s.mean_exec_time DESC\nLIMIT 20;",
+        "query": "SELECT pg_read_file('log/' || name) AS contenido,\n       to_char((now() - interval '75 seconds') AT TIME ZONE current_setting('log_timezone'),\n               'YYYY-MM-DD HH24:MI:SS') AS desde\nFROM pg_ls_logdir()\nWHERE name LIKE '%.log'\nORDER BY modification DESC\nLIMIT 1;",
         "options": {}
       },
-      "id": "62051bb5-e70f-4cce-b151-3a6cb9f6a39b",
+      "id": "7c0e17be-a71b-4287-886c-16565bce840c",
       "name": "Consultar PostgreSQL",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
@@ -45,9 +45,9 @@
     },
     {
       "parameters": {
-        "jsCode": "// R1: consulta lenta (> 1 s).\n// pg_stat_statements ACUMULA. Para no alertar siempre lo mismo, se compara contra la\n// lectura anterior: solo cuentan las ejecuciones NUEVAS cuyo promedio supera 1000 ms.\nconst sd = $getWorkflowStaticData('global');\nsd.prev = sd.prev || {};\nconst lentas = [];\nfor (const { json: r } of $input.all()) {\n  if (!r.queryid) continue;\n  const prev = sd.prev[r.queryid];\n  const dCalls = prev ? r.calls - prev.calls : r.calls;\n  const dTiempo = prev ? r.total_exec_time - prev.total : r.total_exec_time;\n  sd.prev[r.queryid] = { calls: r.calls, total: r.total_exec_time };\n  if (dCalls > 0 && dTiempo / dCalls > 1000) {\n    lentas.push({ ...r, ms_nuevas: Math.round(dTiempo / dCalls) });\n  }\n}\nif (lentas.length === 0) return [];\nconst peor = lentas.sort((a, b) => b.ms_nuevas - a.ms_nuevas)[0];\nreturn [{ json: {\n  codigo: 'R1',\n  severidad: 'ADVERTENCIA',\n  tipo: 'Consulta lenta detectada (> 1 s)',\n  tabla: 'pg_stat_statements',\n  detalle: `Duración promedio: ${peor.ms_nuevas} ms (umbral: 1000 ms). Consultas lentas nuevas: ${lentas.length}`,\n  query: peor.query,\n  usuario: peor.usuario || 'desconocido',\n  accion: 'Revisar plan de ejecución (EXPLAIN ANALYZE) e índices de la consulta.'\n}}];\n"
+        "jsCode": "// R1: consulta lenta (> 1 s).\n// PostgreSQL anota en su log cada sentencia que tarda más que log_min_duration_statement (1000 ms,\n// baseline de M2) con su hora exacta. Se leen las del último minuto: no hace falta recordar nada\n// entre ejecuciones, y Enviar_Alerta descarta repetidos.\nconst UMBRAL = 1000;\nconst r = $input.first().json;\nconst desde = r.desde || '';\nconst lentas = [];\nfor (const l of String(r.contenido || '').split('\\n')) {\n  if (l.slice(0, 19) < desde) continue;\n  const m = l.match(/duration: ([\\d.]+) ms\\s+statement: (.*)$/);\n  if (!m || Number(m[1]) <= UMBRAL) continue;\n  const usuario = (l.match(/\\] (\\S+)@/) || [])[1] || 'desconocido';\n  lentas.push({ ms: Math.round(Number(m[1])), query: m[2].slice(0, 300), usuario });\n}\nif (lentas.length === 0) return [];\nconst peor = lentas.sort((a, b) => b.ms - a.ms)[0];\nreturn [{ json: {\n  codigo: 'R1',\n  severidad: 'ADVERTENCIA',\n  tipo: 'Consulta lenta detectada (> 1 s)',\n  tabla: 'Log de PostgreSQL (log_min_duration_statement)',\n  detalle: `Duración: ${peor.ms} ms (umbral: ${UMBRAL} ms). Consultas lentas en el último minuto: ${lentas.length}`,\n  query: peor.query,\n  usuario: peor.usuario,\n  accion: 'Revisar plan de ejecución (EXPLAIN ANALYZE) e índices de la consulta.'\n}}];\n"
       },
-      "id": "7b94696b-15f5-4767-be59-cbd9709fc086",
+      "id": "1a2c89a9-da13-409d-a281-a33ce350f90c",
       "name": "¿Hay alerta? (arma JSON)",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -66,7 +66,7 @@
         },
         "options": {}
       },
-      "id": "30927a0c-2b1c-451a-9764-751cd03ce86e",
+      "id": "8ee947f7-56fc-46ae-bbc6-cc0f124c45d6",
       "name": "Enviar_Alerta",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.2,
@@ -118,7 +118,7 @@
     "callerPolicy": "workflowsFromSameOwner"
   },
   "pinData": {},
-  "versionId": "0c635f0b-e150-47d5-aacc-a19034460fb6",
+  "versionId": "81a64f52-06bf-407c-9ecf-db7bdf0d1049",
   "meta": {
     "templateCredsSetupCompleted": true
   },

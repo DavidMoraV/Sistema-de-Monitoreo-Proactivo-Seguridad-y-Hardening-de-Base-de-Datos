@@ -6,7 +6,7 @@
       "parameters": {
         "inputSource": "passthrough"
       },
-      "id": "680f6991-e13c-4b0e-9cc2-71b4469269be",
+      "id": "1d67c61f-12a1-4e95-9f9d-5e333e84d8b1",
       "name": "Recibe alerta",
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1.1,
@@ -17,9 +17,9 @@
     },
     {
       "parameters": {
-        "jsCode": "// Subflujo Enviar_Alerta (contrato 3.3). Recibe:\n// { codigo, severidad, tipo, tabla, detalle, query, usuario, accion }\n// Arma el mensaje oficial y el INSERT para alertas_auditoria.\nconst fecha = $now.setZone('America/Costa_Rica').toFormat('yyyy-MM-dd HH:mm:ss');\n\n// Comillas \"dólar\" de PostgreSQL: el texto puede traer comillas o saltos de línea sin romper el SQL\nconst q = (v) => {\n  const s = String(v ?? '').replace(/\\$na\\$/g, '');\n  return '$na$' + s + '$na$';\n};\n\nreturn $input.all().map(item => {\n  const a = item.json;\n  // La tabla solo acepta 'CRÍTICA' o 'ADVERTENCIA' (CHECK de M2)\n  const sev = String(a.severidad || '').toUpperCase();\n  const severidad = sev.startsWith('CR') ? 'CRÍTICA' : 'ADVERTENCIA';\n  const queryTxt = String(a.query || 'N/A').slice(0, 600);\n  const mensaje =\n`ALERTA ${severidad} - NutriAnimales S.A. | Lead University BCD 9220\nTipo: [${a.codigo || '?'}] ${a.tipo || ''}\nFecha: ${fecha}\nTabla: ${a.tabla || 'N/A'}\n${a.detalle || ''}\nQuery: ${queryTxt}\nUsuario: ${a.usuario || 'N/A'}\nSeveridad: ${severidad}\nAcción: ${a.accion || 'Revisar'}`.slice(0, 4000);\n\n  // Esquema de M2 (sql/01_esquema.sql): tipo = categoría (rendimiento/hardening/datos),\n  // alerta = código (R1..R5, H1..H5, D1..D7, máx. 10 caracteres)\n  const codigo = String(a.codigo || '?').toUpperCase().slice(0, 10);\n  const categorias = { R: 'rendimiento', H: 'hardening', D: 'datos', A: 'seguridad' };\n  const categoria = categorias[codigo[0]] || 'otro';\n  const sql_insert =\n    `INSERT INTO alertas_auditoria (tipo, alerta, mensaje, fecha, severidad) VALUES (` +\n    `${q(categoria)}, ${q(codigo)}, ${q(mensaje)}, NOW(), ${q(severidad)});`;\n\n  return { json: { ...a, severidad, fecha, mensaje, sql_insert } };\n});\n"
+        "jsCode": "// Subflujo Enviar_Alerta (contrato 3.3). Recibe:\n// { codigo, severidad, tipo, tabla, detalle, query, usuario, accion }\n// Arma el mensaje oficial y el INSERT para alertas_auditoria.\nconst fecha = $now.setZone('America/Costa_Rica').toFormat('yyyy-MM-dd HH:mm:ss');\n\n// Comillas \"dólar\" de PostgreSQL: el texto puede traer comillas o saltos de línea sin romper el SQL\nconst q = (v) => {\n  const s = String(v ?? '').replace(/\\$na\\$/g, '');\n  return '$na$' + s + '$na$';\n};\n\nreturn $input.all().map(item => {\n  const a = item.json;\n  // La tabla solo acepta 'CRÍTICA' o 'ADVERTENCIA' (CHECK de M2)\n  const sev = String(a.severidad || '').toUpperCase();\n  const severidad = sev.startsWith('CR') ? 'CRÍTICA' : 'ADVERTENCIA';\n  const queryTxt = String(a.query || 'N/A').slice(0, 600);\n  const mensaje =\n`ALERTA ${severidad} - NutriAnimales S.A. | Lead University BCD 9220\nTipo: [${a.codigo || '?'}] ${a.tipo || ''}\nFecha: ${fecha}\nTabla: ${a.tabla || 'N/A'}\n${a.detalle || ''}\nQuery: ${queryTxt}\nUsuario: ${a.usuario || 'N/A'}\nSeveridad: ${severidad}\nAcción: ${a.accion || 'Revisar'}`.slice(0, 4000);\n\n  // Esquema de M2 (sql/01_esquema.sql): tipo = categoría (rendimiento/hardening/datos),\n  // alerta = código (R1..R5, H1..H5, D1..D7, máx. 10 caracteres)\n  const codigo = String(a.codigo || '?').toUpperCase().slice(0, 10);\n  const categorias = { R: 'rendimiento', H: 'hardening', D: 'datos', A: 'seguridad' };\n  const categoria = categorias[codigo[0]] || 'otro';\n  const sql_insert =\n    `INSERT INTO alertas_auditoria (tipo, alerta, mensaje, fecha, severidad) VALUES (` +\n    `${q(categoria)}, ${q(codigo)}, ${q(mensaje)}, NOW(), ${q(severidad)});`;\n\n  // Telegram: modo HTML (en Markdown, un \"_\" como en password_encryption rompe el mensaje)\n  const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n  const lineas = mensaje.split('\\n');\n  const mensaje_html = '<b>' + esc(lineas[0]) + '</b>\\n' + esc(lineas.slice(1).join('\\n'));\n\n  // ¿Ya se envió la misma alerta (mismo código y mismo detalle) en los últimos 10 minutos?\n  const sql_dup =\n    `SELECT count(*)::int AS n FROM alertas_auditoria WHERE alerta = ${q(codigo)} ` +\n    `AND fecha > now() - interval '10 minutes' AND position(${q(a.detalle || '')} in mensaje) > 0;`;\n\n  return { json: { ...a, severidad, fecha, mensaje, mensaje_html, sql_insert, sql_dup } };\n});\n"
       },
-      "id": "4fb3a6cc-e6b8-4d48-8669-b6de93a39834",
+      "id": "d19c170b-e9dd-405b-9200-759407d32c68",
       "name": "Formatear alerta",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -30,18 +30,53 @@
     },
     {
       "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.sql_dup }}",
+        "options": {}
+      },
+      "id": "8652ac73-b2fb-49ea-9bbf-94bb14bc84da",
+      "name": "¿Ya se envió? (10 min)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        440,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgMonitorN8N0001",
+          "name": "Postgres monitor_n8n"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Deja pasar solo las alertas que no se enviaron en los últimos 10 minutos\nconst alertas = $('Formatear alerta').all();\nconst conteos = $input.all();\nreturn alertas.filter((a, i) => !(conteos[i] && Number(conteos[i].json.n) > 0));\n"
+      },
+      "id": "803c6697-1bc0-4661-a92e-5afac9ab30de",
+      "name": "Descartar repetidas",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
         "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
-        "text": "={{ $json.mensaje }}",
+        "text": "={{ $json.mensaje_html }}",
         "additionalFields": {
-          "appendAttribution": false
+          "appendAttribution": false,
+          "parse_mode": "HTML"
         }
       },
-      "id": "3386490f-a273-422a-b7ce-3411a31d9268",
+      "id": "b1cd528d-850f-4f90-95a8-90ce61e96d61",
       "name": "Enviar a Telegram",
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
       "position": [
-        440,
+        880,
         0
       ],
       "credentials": {
@@ -54,15 +89,15 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "={{ $('Formatear alerta').item.json.sql_insert }}",
+        "query": "={{ $('Descartar repetidas').item.json.sql_insert }}",
         "options": {}
       },
-      "id": "411841bb-dfc7-4c95-ad05-f1d6d20db818",
+      "id": "983a97a6-f829-4235-8322-4fce402b8964",
       "name": "Guardar en alertas_auditoria",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
-        660,
+        1100,
         0
       ],
       "credentials": {
@@ -86,6 +121,28 @@
       ]
     },
     "Formatear alerta": {
+      "main": [
+        [
+          {
+            "node": "¿Ya se envió? (10 min)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Ya se envió? (10 min)": {
+      "main": [
+        [
+          {
+            "node": "Descartar repetidas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Descartar repetidas": {
       "main": [
         [
           {
@@ -115,7 +172,7 @@
     "callerPolicy": "workflowsFromSameOwner"
   },
   "pinData": {},
-  "versionId": "6e667721-ddf2-469d-8c01-1d0e44ca476a",
+  "versionId": "a06b8d18-aec5-4cac-8231-db68bb0e974c",
   "meta": {
     "templateCredsSetupCompleted": true
   },

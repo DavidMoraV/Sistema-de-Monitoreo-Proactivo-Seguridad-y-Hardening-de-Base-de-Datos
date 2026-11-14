@@ -13,7 +13,7 @@
           ]
         }
       },
-      "id": "ddcac3ed-a7eb-482e-b8ab-f7e78c992376",
+      "id": "136f6b52-dea4-45df-a4d8-bdc5537c3f9c",
       "name": "Cada 1 minuto",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
@@ -28,7 +28,7 @@
         "query": "SELECT usename, client_addr::text AS client_addr,\n       to_char(backend_start, 'YYYY-MM-DD HH24:MI:SS') AS inicio\nFROM pg_stat_activity\nWHERE client_addr IS NOT NULL\n  AND NOT (client_addr <<= inet '172.16.0.0/12');",
         "options": {}
       },
-      "id": "5716e9f1-3c59-4b1b-aee9-1817d395a3b9",
+      "id": "91c2b343-cad7-47ed-ba01-376bde45f512",
       "name": "Consultar PostgreSQL",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
@@ -45,9 +45,9 @@
     },
     {
       "parameters": {
-        "jsCode": "\n// Evita repetir la MISMA alerta cada minuto (espera 10 min).\n// Nota: al probar con \"Execute workflow\" a mano, n8n no guarda esta memoria,\n// así que en pruebas manuales siempre alerta. Con el flujo activo sí la guarda.\nfunction primeraVez(clave, minutos = 10) {\n  const sd = $getWorkflowStaticData('global');\n  const ahora = Date.now();\n  sd.vistos = sd.vistos || {};\n  for (const k of Object.keys(sd.vistos)) {\n    if (ahora - sd.vistos[k] > 24 * 3600 * 1000) delete sd.vistos[k];\n  }\n  if (sd.vistos[clave] && ahora - sd.vistos[clave] < minutos * 60 * 1000) return false;\n  sd.vistos[clave] = ahora;\n  return true;\n}\n\n// H4: conexión desde fuera de la red Docker (172.16.0.0/12)\nconst filas = $input.all().map(i => i.json).filter(r => r.client_addr);\nif (filas.length === 0) return [];\nconst clave = 'H4:' + filas.map(r => r.client_addr + r.inicio).sort().join('|');\nif (!primeraVez(clave)) return [];\nreturn [{ json: {\n  codigo: 'H4',\n  severidad: 'CRÍTICA',\n  tipo: 'Conexión desde fuera de la red Docker',\n  tabla: 'pg_stat_activity',\n  detalle: `Conexiones externas: ${filas.length}. ` +\n    [...new Set(filas.map(r => `${r.usename} desde ${r.client_addr}`))].slice(0, 5).join('; '),\n  query: \"SELECT ... WHERE NOT (client_addr <<= inet '172.16.0.0/12')\",\n  usuario: [...new Set(filas.map(r => r.usename))].join(', '),\n  accion: 'Terminar la sesión (pg_terminate_backend), revisar pg_hba.conf y las redes conectadas al contenedor.'\n}}];\n"
+        "jsCode": "\n// La anti-repetición (misma alerta en 10 min) la hace Enviar_Alerta consultando alertas_auditoria.\n// (En N8N 2.x la memoria del flujo no se conserva entre ejecuciones de flujos publicados.)\nfunction primeraVez() { return true; }\n\n// H4: conexión desde fuera de la red Docker (172.16.0.0/12)\nconst filas = $input.all().map(i => i.json).filter(r => r.client_addr);\nif (filas.length === 0) return [];\nconst clave = 'H4:' + filas.map(r => r.client_addr + r.inicio).sort().join('|');\nif (!primeraVez(clave)) return [];\nreturn [{ json: {\n  codigo: 'H4',\n  severidad: 'CRÍTICA',\n  tipo: 'Conexión desde fuera de la red Docker',\n  tabla: 'pg_stat_activity',\n  detalle: `Conexiones externas: ${filas.length}. ` +\n    [...new Set(filas.map(r => `${r.usename} desde ${r.client_addr}`))].slice(0, 5).join('; '),\n  query: \"SELECT ... WHERE NOT (client_addr <<= inet '172.16.0.0/12')\",\n  usuario: [...new Set(filas.map(r => r.usename))].join(', '),\n  accion: 'Terminar la sesión (pg_terminate_backend), revisar pg_hba.conf y las redes conectadas al contenedor.'\n}}];\n"
       },
-      "id": "05e22f8a-44a4-4d22-95b7-24ee4155aaa4",
+      "id": "9ce5d508-ec91-48b8-a9a4-05e152313991",
       "name": "¿Hay alerta? (arma JSON)",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -66,7 +66,7 @@
         },
         "options": {}
       },
-      "id": "33c02690-b02b-4bdc-8f6c-1b4de479e7ad",
+      "id": "94316a65-0e5f-4cd1-8317-331da636fa33",
       "name": "Enviar_Alerta",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.2,
@@ -118,7 +118,7 @@
     "callerPolicy": "workflowsFromSameOwner"
   },
   "pinData": {},
-  "versionId": "f1d16f1c-1192-4578-bf51-2d001ac9daaf",
+  "versionId": "4c7186c5-d6a0-468f-9980-848d69d93b05",
   "meta": {
     "templateCredsSetupCompleted": true
   },

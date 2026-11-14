@@ -13,7 +13,7 @@
           ]
         }
       },
-      "id": "1f453cf9-6f14-4a9c-b938-a9c532a9c65d",
+      "id": "72b46f9b-e8e8-4d45-b49e-7a189f466fa9",
       "name": "Cada 1 minuto",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
@@ -28,7 +28,7 @@
         "query": "SELECT count(*)::int AS conexiones,\n       string_agg(DISTINCT usename, ', ') AS usuarios\nFROM pg_stat_activity\nWHERE backend_type = 'client backend';",
         "options": {}
       },
-      "id": "19fb3b1e-9ad4-49dd-a8fa-26f8231c0397",
+      "id": "15f9af62-c871-4532-bc90-0436928fc631",
       "name": "Consultar PostgreSQL",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
@@ -45,9 +45,9 @@
     },
     {
       "parameters": {
-        "jsCode": "\n// Evita repetir la MISMA alerta cada minuto (espera 10 min).\n// Nota: al probar con \"Execute workflow\" a mano, n8n no guarda esta memoria,\n// así que en pruebas manuales siempre alerta. Con el flujo activo sí la guarda.\nfunction primeraVez(clave, minutos = 10) {\n  const sd = $getWorkflowStaticData('global');\n  const ahora = Date.now();\n  sd.vistos = sd.vistos || {};\n  for (const k of Object.keys(sd.vistos)) {\n    if (ahora - sd.vistos[k] > 24 * 3600 * 1000) delete sd.vistos[k];\n  }\n  if (sd.vistos[clave] && ahora - sd.vistos[clave] < minutos * 60 * 1000) return false;\n  sd.vistos[clave] = ahora;\n  return true;\n}\n\n// R2: más de 10 conexiones activas\nconst UMBRAL = 10;\nconst r = $input.first().json;\nif (!(r.conexiones > UMBRAL)) return [];\nif (!primeraVez('R2')) return [];\nreturn [{ json: {\n  codigo: 'R2',\n  severidad: 'ADVERTENCIA',\n  tipo: 'Exceso de conexiones activas',\n  tabla: 'pg_stat_activity',\n  detalle: `Conexiones activas: ${r.conexiones} (umbral: ${UMBRAL}). Usuarios: ${r.usuarios}`,\n  query: \"SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend'\",\n  usuario: r.usuarios,\n  accion: 'Identificar el origen de las conexiones y terminar las sesiones innecesarias (pg_terminate_backend).'\n}}];\n"
+        "jsCode": "\n// La anti-repetición (misma alerta en 10 min) la hace Enviar_Alerta consultando alertas_auditoria.\n// (En N8N 2.x la memoria del flujo no se conserva entre ejecuciones de flujos publicados.)\nfunction primeraVez() { return true; }\n\n// R2: más de 10 conexiones activas\nconst UMBRAL = 10;\nconst r = $input.first().json;\nif (!(r.conexiones > UMBRAL)) return [];\nif (!primeraVez('R2')) return [];\nreturn [{ json: {\n  codigo: 'R2',\n  severidad: 'ADVERTENCIA',\n  tipo: 'Exceso de conexiones activas',\n  tabla: 'pg_stat_activity',\n  detalle: `Conexiones activas: ${r.conexiones} (umbral: ${UMBRAL}). Usuarios: ${r.usuarios}`,\n  query: \"SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend'\",\n  usuario: r.usuarios,\n  accion: 'Identificar el origen de las conexiones y terminar las sesiones innecesarias (pg_terminate_backend).'\n}}];\n"
       },
-      "id": "5ec5241c-b4f2-4311-8713-d9a19cd16175",
+      "id": "0ef4f52a-b032-4038-b268-a225f4bd13f6",
       "name": "¿Hay alerta? (arma JSON)",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -66,7 +66,7 @@
         },
         "options": {}
       },
-      "id": "275b6ed0-3f71-4fa8-a933-3b04fa51ceaf",
+      "id": "32b3cad6-3979-4e85-8b90-0b26f5564629",
       "name": "Enviar_Alerta",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.2,
@@ -118,7 +118,7 @@
     "callerPolicy": "workflowsFromSameOwner"
   },
   "pinData": {},
-  "versionId": "171e7d12-5ed6-4eeb-8e83-7e6ece9c0088",
+  "versionId": "6b4e44e2-004e-4af9-bbc0-cbb6b799cb06",
   "meta": {
     "templateCredsSetupCompleted": true
   },

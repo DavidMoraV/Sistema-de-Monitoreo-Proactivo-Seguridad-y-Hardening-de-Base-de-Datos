@@ -38,6 +38,8 @@ bash scripts/init_n8n_m3.sh
 
 Se puede volver a correr cuando cambie un flujo: primero desactiva los flujos y luego los reimporta.
 
+**Bot en el grupo de Telegram:** desactivar el modo privacidad del bot (BotFather → `/setprivacy` → *Disable*) y luego sacarlo y volver a agregarlo al grupo. Con el modo privacidad activo, Telegram solo le entrega al bot los comandos que empiezan con `/`, no las preguntas normales.
+
 ## 4. Para M4 y M5: cómo usar `Enviar_Alerta`
 
 Al final de cada flujo de alerta, agregar un nodo **Execute Workflow** → *Source: Database* → *Workflow: By ID* → `enviarAlertaNA01`.
@@ -60,11 +62,12 @@ El nodo anterior debe entregar **un ítem** con el contrato:
 1. **Bot por sondeo (`getUpdates` cada 10 s), no webhook.** Telegram no acepta el certificado autofirmado de Nginx y el servidor no es público (sección 10, punto 10). El bot solo atiende el chat de `TELEGRAM_CHAT_ID`.
 2. **Tres barreras en el bot:** el filtro de entrada (M5), la validación del SQL de Groq (solo una sentencia `SELECT`/`WITH`, sin palabras peligrosas y con `LIMIT 50` forzado) y el usuario `agente_ia` de solo lectura.
 3. **Modelo de Groq `openai/gpt-oss-120b`.** Groq apagó `llama-3.3-70b-versatile` el 16 de agosto de 2026.
-4. **R1 sin falsos repetidos.** `pg_stat_statements` acumula, así que el flujo compara contra la lectura anterior y solo alerta por ejecuciones nuevas lentas.
+4. **R1 lee el log de PostgreSQL** (`log_min_duration_statement` = 1000 ms del baseline): solo cuenta las sentencias lentas del último minuto, sin depender de memoria entre ejecuciones.
 5. **R4 con dos fuentes:** el log de PostgreSQL (`pg_read_file`) y `auth.log` vía Loki para A1 por SSH (sección 10, punto 9). Si Loki no existe, ese nodo se ignora sin romper el flujo.
 6. **R5** usa `vw_settings_servidor` (de M2) y refresca `pg_settings_snapshot` en cada ciclo, así cada cambio se alerta una sola vez.
-7. **Sin spam:** una alerta igual no se repite durante 10 minutos (memoria del flujo).
+7. **Sin spam:** `Enviar_Alerta` consulta `alertas_auditoria` y descarta una alerta con el mismo código y detalle enviada en los últimos 10 minutos. Aplica también a las alertas de M4 y M5.
 8. **Ningún secreto en los flujos:** todo sale de credenciales de N8N o del `.env`.
+9. **Mensajes de Telegram en modo HTML:** el nodo de Telegram usa Markdown por defecto, y un `_` suelto (como en `password_encryption`) hace que Telegram rechace el mensaje con *Bad request*. Por eso los mensajes van en HTML, con `<`, `>` y `&` escapados.
 
 ## 6. Capturas pendientes (en el servidor de la demo)
 

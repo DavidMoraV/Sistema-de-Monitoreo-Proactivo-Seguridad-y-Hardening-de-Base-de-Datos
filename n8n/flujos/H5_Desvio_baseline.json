@@ -13,7 +13,7 @@
           ]
         }
       },
-      "id": "78f69294-5746-433b-8e1f-9828caaeaf6a",
+      "id": "5ea8d055-c641-4b2a-96ee-761860100d48",
       "name": "Cada 1 minuto",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
@@ -28,7 +28,7 @@
         "query": "SELECT s.name, s.setting AS actual, b.valor_esperado\nFROM pg_settings s\nJOIN pg_settings_baseline b ON b.name = s.name\nWHERE s.setting <> b.valor_esperado;",
         "options": {}
       },
-      "id": "481f8d8b-d932-4168-87f1-0426a9bde312",
+      "id": "eed062a4-525d-42db-9577-691085011ef3",
       "name": "Consultar PostgreSQL",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
@@ -45,9 +45,9 @@
     },
     {
       "parameters": {
-        "jsCode": "\n// Evita repetir la MISMA alerta cada minuto (espera 10 min).\n// Nota: al probar con \"Execute workflow\" a mano, n8n no guarda esta memoria,\n// así que en pruebas manuales siempre alerta. Con el flujo activo sí la guarda.\nfunction primeraVez(clave, minutos = 10) {\n  const sd = $getWorkflowStaticData('global');\n  const ahora = Date.now();\n  sd.vistos = sd.vistos || {};\n  for (const k of Object.keys(sd.vistos)) {\n    if (ahora - sd.vistos[k] > 24 * 3600 * 1000) delete sd.vistos[k];\n  }\n  if (sd.vistos[clave] && ahora - sd.vistos[clave] < minutos * 60 * 1000) return false;\n  sd.vistos[clave] = ahora;\n  return true;\n}\n\n// H5: desvío del baseline de seguridad (pg_settings_baseline de M2)\nconst filas = $input.all().map(i => i.json).filter(r => r.name);\nif (filas.length === 0) return [];\nconst clave = 'H5:' + filas.map(r => r.name + '=' + r.actual).sort().join('|');\nif (!primeraVez(clave)) return [];\nreturn [{ json: {\n  codigo: 'H5',\n  severidad: 'CRÍTICA',\n  tipo: 'Desvío del baseline de seguridad',\n  tabla: 'pg_settings_baseline',\n  detalle: 'Parámetros fuera de baseline: ' + filas.map(r => `${r.name} = ${r.actual} (esperado: ${r.valor_esperado})`).join('; '),\n  query: 'ALTER SYSTEM SET ...',\n  usuario: 'N/A (revisar log de PostgreSQL)',\n  accion: 'Restaurar el valor seguro: ALTER SYSTEM RESET <parámetro>; SELECT pg_reload_conf();'\n}}];\n"
+        "jsCode": "\n// La anti-repetición (misma alerta en 10 min) la hace Enviar_Alerta consultando alertas_auditoria.\n// (En N8N 2.x la memoria del flujo no se conserva entre ejecuciones de flujos publicados.)\nfunction primeraVez() { return true; }\n\n// H5: desvío del baseline de seguridad (pg_settings_baseline de M2)\nconst filas = $input.all().map(i => i.json).filter(r => r.name);\nif (filas.length === 0) return [];\nconst clave = 'H5:' + filas.map(r => r.name + '=' + r.actual).sort().join('|');\nif (!primeraVez(clave)) return [];\nreturn [{ json: {\n  codigo: 'H5',\n  severidad: 'CRÍTICA',\n  tipo: 'Desvío del baseline de seguridad',\n  tabla: 'pg_settings_baseline',\n  detalle: 'Parámetros fuera de baseline: ' + filas.map(r => `${r.name} = ${r.actual} (esperado: ${r.valor_esperado})`).join('; '),\n  query: 'ALTER SYSTEM SET ...',\n  usuario: 'N/A (revisar log de PostgreSQL)',\n  accion: 'Restaurar el valor seguro: ALTER SYSTEM RESET <parámetro>; SELECT pg_reload_conf();'\n}}];\n"
       },
-      "id": "2ecdeda6-9872-43ea-9dbc-3cacc0e15397",
+      "id": "a84d26f3-e6ac-4647-9919-55d18c3378d6",
       "name": "¿Hay alerta? (arma JSON)",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -66,7 +66,7 @@
         },
         "options": {}
       },
-      "id": "cf2848f4-7513-4ddc-8667-aad7eff72a5b",
+      "id": "dfcffd01-2d20-4fdc-92b3-cb8aa667a1be",
       "name": "Enviar_Alerta",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.2,
@@ -118,7 +118,7 @@
     "callerPolicy": "workflowsFromSameOwner"
   },
   "pinData": {},
-  "versionId": "b290e479-d1af-44fa-97ea-711ec86173e6",
+  "versionId": "410ebc6b-1844-4fe9-889d-3c45bf8204c6",
   "meta": {
     "templateCredsSetupCompleted": true
   },

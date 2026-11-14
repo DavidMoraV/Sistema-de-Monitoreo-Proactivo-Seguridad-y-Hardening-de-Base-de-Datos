@@ -1,0 +1,126 @@
+{
+  "id": "alertaD7Exfil001",
+  "name": "D7 - Exfiltracion de datos",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "30b7de8f-fee2-5644-a1be-0bbd29b4cd82",
+      "name": "Cada 1 minuto",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- D7 corregida (Plan, sección 10, punto 1): paréntesis en el filtro de tablas y pg_roles.rolname.\n-- Mismo mecanismo de D1/D6: rows / calls y reset por queryid tras detectar (una alerta por evento).\n-- Para excluir un reporte legítimo, agregar: AND s.queryid NOT IN (<queryid>)\nSELECT s.queryid::text AS queryid, r.rolname AS usuario, left(s.query, 500) AS query,\n       s.calls, s.rows, s.rows / NULLIF(s.calls, 0) AS filas_por_ejecucion,\n       pg_stat_statements_reset(s.userid, s.dbid, s.queryid)::text AS reiniciado\nFROM pg_stat_statements s\nJOIN pg_roles r ON r.oid = s.userid\nWHERE s.query ~* '^\\s*(select|with)\\M'\n  AND s.query ~* '\\mfrom\\M.*\\m(clientes|ventas)\\M'\n  AND r.rolname <> 'monitor_n8n'                  -- consultas del propio monitoreo\n  AND s.rows / NULLIF(s.calls, 0) > 1000;",
+        "options": {}
+      },
+      "id": "5483b2fc-cebd-585c-92bb-101b8243e8b1",
+      "name": "Consultar PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        220,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgMonitorN8N0001",
+          "name": "Postgres monitor_n8n"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// La anti-repetición general (misma alerta en 10 min) la hace Enviar_Alerta.\n// n8n devuelve un ítem vacío cuando la consulta no trae filas: se filtra por una columna clave.\n// D7: posible exfiltración (> 1,000 filas por consulta en clientes o ventas). También valida el ataque A5.\nconst filas = $input.all().map(i => i.json).filter(r => r.queryid);\nreturn filas.map(r => {\n  const tablas = [...new Set((String(r.query).match(/\\b(clientes|ventas)\\b/gi) || []).map(t => t.toLowerCase()))];\n  return { json: {\n    codigo: 'D7',\n    severidad: 'CRÍTICA',\n    tipo: 'Posible exfiltración de datos (consulta masiva)',\n    tabla: tablas.join(', ') || 'clientes / ventas',\n    detalle: `Filas devueltas: ${r.filas_por_ejecucion} por consulta (umbral: 1000). Ejecuciones: ${r.calls}. queryid ${r.queryid}`,\n    query: r.query,\n    usuario: r.usuario,\n    accion: `Revisar la actividad de ${r.usuario}. Si no es legítima: rotar su contraseña (scripts/rotar_password_bd.sh) y revocar acceso.`\n  }};\n});\n"
+      },
+      "id": "23f30477-9af0-5e95-9f9a-b3c3355a44e5",
+      "name": "¿Hay alerta? (arma JSON)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "enviarAlertaNA01",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "40002906-96e2-59c4-b6c1-52b5f8eece23",
+      "name": "Enviar_Alerta",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        660,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Cada 1 minuto": {
+      "main": [
+        [
+          {
+            "node": "Consultar PostgreSQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar PostgreSQL": {
+      "main": [
+        [
+          {
+            "node": "¿Hay alerta? (arma JSON)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay alerta? (arma JSON)": {
+      "main": [
+        [
+          {
+            "node": "Enviar_Alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Costa_Rica",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "versionId": "265344a0-346d-5b97-950f-16501ffe9f63",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

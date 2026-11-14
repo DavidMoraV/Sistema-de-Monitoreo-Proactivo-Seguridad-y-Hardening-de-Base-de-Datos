@@ -44,6 +44,9 @@ require(\"fs\").writeFileSync(\"/tmp/creds.json\", JSON.stringify(creds), { mode
 " && n8n import:credentials --input=/tmp/creds.json; r=$?; rm -f /tmp/creds.json; exit $r'
 
 IDS="enviarAlertaNA01 botTelegramNA001 alertaR1Lenta001 alertaR2Conex001 alertaR3Horar001 alertaR4Auth0001 alertaR5Param001 alertaH3Privi001 alertaH4RedEx001 alertaH5Basel001"
+# M4: alertas de datos D1–D7 (n8n/flujos/D*.json). Van en la misma lista porque el paso 3 importa
+# toda la carpeta y n8n no deja sobrescribir un flujo activo.
+IDS="$IDS alertaD1Delet001 alertaD2Creci001 alertaD3Backu001 alertaD4Dupli001 alertaD5Bloqu001 alertaD6Updat001 alertaD7Exfil001"
 
 echo "3) Importando flujos..."
 # Si ya estaban activos (segunda vez que se corre el script), hay que desactivarlos antes:

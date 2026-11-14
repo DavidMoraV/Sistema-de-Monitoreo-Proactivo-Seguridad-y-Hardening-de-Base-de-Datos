@@ -1,0 +1,126 @@
+{
+  "id": "alertaR3Horar001",
+  "name": "R3 - Conexion fuera de horario",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "85a9600a-9aa5-414e-9c8c-5dcf182264a5",
+      "name": "Cada 1 minuto",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT usename, client_addr::text AS client_addr,\n       to_char(backend_start, 'YYYY-MM-DD HH24:MI:SS') AS inicio,\n       extract(hour FROM now())::int AS hora_actual\nFROM pg_stat_activity\nWHERE backend_type = 'client backend'\n  AND usename <> 'monitor_n8n';",
+        "options": {}
+      },
+      "id": "9f169ceb-c078-4055-8081-11a9e388d5e1",
+      "name": "Consultar PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        220,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgMonitorN8N0001",
+          "name": "Postgres monitor_n8n"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Evita repetir la MISMA alerta cada minuto (espera 10 min).\n// Nota: al probar con \"Execute workflow\" a mano, n8n no guarda esta memoria,\n// así que en pruebas manuales siempre alerta. Con el flujo activo sí la guarda.\nfunction primeraVez(clave, minutos = 10) {\n  const sd = $getWorkflowStaticData('global');\n  const ahora = Date.now();\n  sd.vistos = sd.vistos || {};\n  for (const k of Object.keys(sd.vistos)) {\n    if (ahora - sd.vistos[k] > 24 * 3600 * 1000) delete sd.vistos[k];\n  }\n  if (sd.vistos[clave] && ahora - sd.vistos[clave] < minutos * 60 * 1000) return false;\n  sd.vistos[clave] = ahora;\n  return true;\n}\n\n// R3: conexión fuera de horario (entre 11 pm y 6 am).\n// PARA PROBAR DE DÍA: cambie temporalmente HORA_INICIO a la hora actual (ej. 15) y documéntelo.\nconst HORA_INICIO = 23;   // 11 pm\nconst HORA_FIN = 6;       // 6 am\nconst filas = $input.all().map(i => i.json).filter(r => r.usename);\nif (filas.length === 0) return [];\nconst h = filas[0].hora_actual;\nconst fueraDeHorario = HORA_INICIO > HORA_FIN\n  ? (h >= HORA_INICIO || h < HORA_FIN)\n  : (h >= HORA_INICIO && h < HORA_FIN);\nif (!fueraDeHorario) return [];\nconst clave = 'R3:' + filas.map(r => r.usename + r.inicio).sort().join('|');\nif (!primeraVez(clave)) return [];\nreturn [{ json: {\n  codigo: 'R3',\n  severidad: 'ADVERTENCIA',\n  tipo: 'Conexión fuera de horario laboral',\n  tabla: 'pg_stat_activity',\n  detalle: 'Sesiones: ' + filas.map(r => `${r.usename} desde ${r.client_addr || 'local'} (inicio ${r.inicio})`).join('; '),\n  query: 'SELECT usename, client_addr, backend_start FROM pg_stat_activity ...',\n  usuario: [...new Set(filas.map(r => r.usename))].join(', '),\n  accion: 'Verificar con el dueño de la cuenta si el acceso estaba autorizado.'\n}}];\n"
+      },
+      "id": "4bdb6151-a750-4858-a0bf-3534608a8979",
+      "name": "¿Hay alerta? (arma JSON)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "enviarAlertaNA01",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "7dbdb3bc-0f1e-4cd6-8b15-e0c6702758ea",
+      "name": "Enviar_Alerta",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        660,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Cada 1 minuto": {
+      "main": [
+        [
+          {
+            "node": "Consultar PostgreSQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar PostgreSQL": {
+      "main": [
+        [
+          {
+            "node": "¿Hay alerta? (arma JSON)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay alerta? (arma JSON)": {
+      "main": [
+        [
+          {
+            "node": "Enviar_Alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Costa_Rica",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "versionId": "0df507e6-affe-4681-aadb-8f9bc0e9d7c1",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

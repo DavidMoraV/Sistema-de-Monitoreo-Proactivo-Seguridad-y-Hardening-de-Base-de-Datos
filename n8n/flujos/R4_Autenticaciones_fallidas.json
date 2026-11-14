@@ -1,0 +1,164 @@
+{
+  "id": "alertaR4Auth0001",
+  "name": "R4 - Autenticaciones fallidas",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "60db1f46-61c2-47fd-8a89-08b83d4d5993",
+      "name": "Cada 1 minuto",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT pg_read_file('log/' || name) AS contenido,\n       to_char((now() - interval '10 minutes') AT TIME ZONE current_setting('log_timezone'),\n               'YYYY-MM-DD HH24:MI:SS') AS desde\nFROM pg_ls_logdir()\nWHERE name LIKE '%.log'\nORDER BY modification DESC\nLIMIT 1;",
+        "options": {}
+      },
+      "id": "45a62bda-c724-4e0b-96b7-a927215f76bf",
+      "name": "Consultar PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        220,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgMonitorN8N0001",
+          "name": "Postgres monitor_n8n"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "http://loki:3100/loki/api/v1/query",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "query",
+              "value": "sum(count_over_time({job=\"auth\"} |= \"Failed password\" [10m]))"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 5000
+        }
+      },
+      "id": "b6800339-b8a7-46a8-8150-8f1451558d10",
+      "name": "Fallos SSH en Loki (M5)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        0
+      ],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Evita repetir la MISMA alerta cada minuto (espera 10 min).\n// Nota: al probar con \"Execute workflow\" a mano, n8n no guarda esta memoria,\n// así que en pruebas manuales siempre alerta. Con el flujo activo sí la guarda.\nfunction primeraVez(clave, minutos = 10) {\n  const sd = $getWorkflowStaticData('global');\n  const ahora = Date.now();\n  sd.vistos = sd.vistos || {};\n  for (const k of Object.keys(sd.vistos)) {\n    if (ahora - sd.vistos[k] > 24 * 3600 * 1000) delete sd.vistos[k];\n  }\n  if (sd.vistos[clave] && ahora - sd.vistos[clave] < minutos * 60 * 1000) return false;\n  sd.vistos[clave] = ahora;\n  return true;\n}\n\n// R4: más de 5 autenticaciones fallidas en 10 minutos.\n// Fuente 1: log de PostgreSQL (siempre). Fuente 2: auth.log vía Loki (si M5 ya lo dejó listo;\n// si Loki no existe, el nodo anterior falla en silencio y se usa solo el log de PG).\nconst UMBRAL = 5;\nconst pgRow = $('Consultar PostgreSQL').first().json;\nconst desde = pgRow.desde || '';\nconst lineas = String(pgRow.contenido || '').split('\\n');\nconst fallosPG = lineas.filter(l =>\n  l.includes('password authentication failed') && l.slice(0, 19) >= desde);\nconst usuarios = [...new Set(fallosPG.map(l => (l.match(/for user \"([^\"]+)\"/) || [])[1]).filter(Boolean))];\n\nlet fallosSSH = 0;\ntry {\n  const v = $input.first().json?.data?.result?.[0]?.value?.[1];\n  fallosSSH = Number(v) || 0;\n} catch (e) { fallosSSH = 0; }\n\nconst total = fallosPG.length + fallosSSH;\nif (total <= UMBRAL) return [];\nif (!primeraVez('R4')) return [];\nreturn [{ json: {\n  codigo: 'R4',\n  severidad: 'CRÍTICA',\n  tipo: 'Múltiples autenticaciones fallidas (posible fuerza bruta)',\n  tabla: 'N/A (logs de PostgreSQL / auth.log)',\n  detalle: `Intentos fallidos en 10 min: ${total} (PostgreSQL: ${fallosPG.length}, SSH: ${fallosSSH}; umbral: ${UMBRAL})`,\n  query: 'pg_read_file(log) + Loki {job=\"auth\"} |= \"Failed password\"',\n  usuario: usuarios.join(', ') || (fallosSSH ? 'SSH' : 'desconocido'),\n  accion: 'Identificar la IP de origen y bloquearla (ufw deny from <ip>). Revisar si la cuenta fue comprometida.'\n}}];\n"
+      },
+      "id": "625ba1fb-2f1e-493d-b002-7c87841ebc41",
+      "name": "¿Hay alerta? (arma JSON)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "enviarAlertaNA01",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "41beae65-dba8-40e1-b9f0-e75ff374c26b",
+      "name": "Enviar_Alerta",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        880,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Cada 1 minuto": {
+      "main": [
+        [
+          {
+            "node": "Consultar PostgreSQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar PostgreSQL": {
+      "main": [
+        [
+          {
+            "node": "Fallos SSH en Loki (M5)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fallos SSH en Loki (M5)": {
+      "main": [
+        [
+          {
+            "node": "¿Hay alerta? (arma JSON)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay alerta? (arma JSON)": {
+      "main": [
+        [
+          {
+            "node": "Enviar_Alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Costa_Rica",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "versionId": "0a1fe40c-f213-41a1-b59c-2e080943e750",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

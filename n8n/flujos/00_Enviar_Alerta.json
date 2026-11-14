@@ -1,0 +1,123 @@
+{
+  "id": "enviarAlertaNA01",
+  "name": "Enviar_Alerta",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "680f6991-e13c-4b0e-9cc2-71b4469269be",
+      "name": "Recibe alerta",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Subflujo Enviar_Alerta (contrato 3.3). Recibe:\n// { codigo, severidad, tipo, tabla, detalle, query, usuario, accion }\n// Arma el mensaje oficial y el INSERT para alertas_auditoria.\nconst fecha = $now.setZone('America/Costa_Rica').toFormat('yyyy-MM-dd HH:mm:ss');\n\n// Comillas \"dólar\" de PostgreSQL: el texto puede traer comillas o saltos de línea sin romper el SQL\nconst q = (v) => {\n  const s = String(v ?? '').replace(/\\$na\\$/g, '');\n  return '$na$' + s + '$na$';\n};\n\nreturn $input.all().map(item => {\n  const a = item.json;\n  // La tabla solo acepta 'CRÍTICA' o 'ADVERTENCIA' (CHECK de M2)\n  const sev = String(a.severidad || '').toUpperCase();\n  const severidad = sev.startsWith('CR') ? 'CRÍTICA' : 'ADVERTENCIA';\n  const queryTxt = String(a.query || 'N/A').slice(0, 600);\n  const mensaje =\n`ALERTA ${severidad} - NutriAnimales S.A. | Lead University BCD 9220\nTipo: [${a.codigo || '?'}] ${a.tipo || ''}\nFecha: ${fecha}\nTabla: ${a.tabla || 'N/A'}\n${a.detalle || ''}\nQuery: ${queryTxt}\nUsuario: ${a.usuario || 'N/A'}\nSeveridad: ${severidad}\nAcción: ${a.accion || 'Revisar'}`.slice(0, 4000);\n\n  // Esquema de M2 (sql/01_esquema.sql): tipo = categoría (rendimiento/hardening/datos),\n  // alerta = código (R1..R5, H1..H5, D1..D7, máx. 10 caracteres)\n  const codigo = String(a.codigo || '?').toUpperCase().slice(0, 10);\n  const categorias = { R: 'rendimiento', H: 'hardening', D: 'datos', A: 'seguridad' };\n  const categoria = categorias[codigo[0]] || 'otro';\n  const sql_insert =\n    `INSERT INTO alertas_auditoria (tipo, alerta, mensaje, fecha, severidad) VALUES (` +\n    `${q(categoria)}, ${q(codigo)}, ${q(mensaje)}, NOW(), ${q(severidad)});`;\n\n  return { json: { ...a, severidad, fecha, mensaje, sql_insert } };\n});\n"
+      },
+      "id": "4fb3a6cc-e6b8-4d48-8669-b6de93a39834",
+      "name": "Formatear alerta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.mensaje }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "3386490f-a273-422a-b7ce-3411a31d9268",
+      "name": "Enviar a Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        440,
+        0
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "telegramNA000001",
+          "name": "Telegram Bot NutriAnimales"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $('Formatear alerta').item.json.sql_insert }}",
+        "options": {}
+      },
+      "id": "411841bb-dfc7-4c95-ad05-f1d6d20db818",
+      "name": "Guardar en alertas_auditoria",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        660,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgMonitorN8N0001",
+          "name": "Postgres monitor_n8n"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Recibe alerta": {
+      "main": [
+        [
+          {
+            "node": "Formatear alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Formatear alerta": {
+      "main": [
+        [
+          {
+            "node": "Enviar a Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar a Telegram": {
+      "main": [
+        [
+          {
+            "node": "Guardar en alertas_auditoria",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Costa_Rica",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "versionId": "6e667721-ddf2-469d-8c01-1d0e44ca476a",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

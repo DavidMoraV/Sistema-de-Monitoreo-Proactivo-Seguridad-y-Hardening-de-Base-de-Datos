@@ -1,0 +1,126 @@
+{
+  "id": "alertaH3Privi001",
+  "name": "H3 - Permisos de escritura en agente_ia",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "16d0ade2-2d03-444d-9627-dcc39e170fe8",
+      "name": "Cada 1 minuto",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT c.relname AS tabla, p.priv\nFROM pg_class c\nJOIN pg_namespace n ON n.oid = c.relnamespace\nCROSS JOIN unnest(ARRAY['INSERT','UPDATE','DELETE','TRUNCATE']) AS p(priv)\nWHERE n.nspname = 'public' AND c.relkind = 'r'\n  AND has_table_privilege('agente_ia', c.oid, p.priv);",
+        "options": {}
+      },
+      "id": "073adb64-76ef-4470-84ca-7c88951385a1",
+      "name": "Consultar PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        220,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgMonitorN8N0001",
+          "name": "Postgres monitor_n8n"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Evita repetir la MISMA alerta cada minuto (espera 10 min).\n// Nota: al probar con \"Execute workflow\" a mano, n8n no guarda esta memoria,\n// así que en pruebas manuales siempre alerta. Con el flujo activo sí la guarda.\nfunction primeraVez(clave, minutos = 10) {\n  const sd = $getWorkflowStaticData('global');\n  const ahora = Date.now();\n  sd.vistos = sd.vistos || {};\n  for (const k of Object.keys(sd.vistos)) {\n    if (ahora - sd.vistos[k] > 24 * 3600 * 1000) delete sd.vistos[k];\n  }\n  if (sd.vistos[clave] && ahora - sd.vistos[clave] < minutos * 60 * 1000) return false;\n  sd.vistos[clave] = ahora;\n  return true;\n}\n\n// H3: el usuario de solo lectura agente_ia recibió permisos de escritura\nconst filas = $input.all().map(i => i.json).filter(r => r.tabla);\nif (filas.length === 0) return [];\nconst privs = [...new Set(filas.map(r => r.priv))].join(', ');\nconst tablas = [...new Set(filas.map(r => r.tabla))];\nif (!primeraVez('H3:' + privs + ':' + tablas.length)) return [];\nreturn [{ json: {\n  codigo: 'H3',\n  severidad: 'CRÍTICA',\n  tipo: 'Escalada de privilegios en agente_ia',\n  tabla: tablas.slice(0, 5).join(', ') + (tablas.length > 5 ? ` (+${tablas.length - 5} más)` : ''),\n  detalle: `agente_ia (solo lectura) tiene ahora: ${privs} en ${tablas.length} tabla(s)`,\n  query: 'GRANT ... TO agente_ia',\n  usuario: 'agente_ia',\n  accion: 'Revocar de inmediato: REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA public FROM agente_ia;'\n}}];\n"
+      },
+      "id": "2a7db302-01aa-4208-8998-7b12b032531b",
+      "name": "¿Hay alerta? (arma JSON)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "enviarAlertaNA01",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "17c617f7-ff22-4592-9075-cccd2d49ceef",
+      "name": "Enviar_Alerta",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        660,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Cada 1 minuto": {
+      "main": [
+        [
+          {
+            "node": "Consultar PostgreSQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar PostgreSQL": {
+      "main": [
+        [
+          {
+            "node": "¿Hay alerta? (arma JSON)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay alerta? (arma JSON)": {
+      "main": [
+        [
+          {
+            "node": "Enviar_Alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Costa_Rica",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "versionId": "2aad7616-22db-4d70-9e96-8f21c5737b27",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

@@ -1,0 +1,160 @@
+{
+  "id": "alertaR5Param001",
+  "name": "R5 - Cambio de parametros",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "80c65f60-85d2-4ca3-a06b-d407e4e86179",
+      "name": "Cada 1 minuto",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT s.name, sn.setting AS antes, s.setting AS ahora\nFROM vw_settings_servidor s          -- vista de M2: excluye valores de sesión\nJOIN pg_settings_snapshot sn USING (name)\nWHERE s.setting IS DISTINCT FROM sn.setting;",
+        "options": {}
+      },
+      "id": "6dee5115-8b70-4fd5-85a2-78220866fd19",
+      "name": "Consultar PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        220,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgMonitorN8N0001",
+          "name": "Postgres monitor_n8n"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "DELETE FROM pg_settings_snapshot;\nINSERT INTO pg_settings_snapshot (name, setting)\nSELECT name, setting FROM vw_settings_servidor;",
+        "options": {}
+      },
+      "id": "a68af091-fbdf-4124-af9f-b9146d4a83d4",
+      "name": "Refrescar foto (snapshot)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        440,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgMonitorN8N0001",
+          "name": "Postgres monitor_n8n"
+        }
+      },
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// R5: cualquier cambio de parámetros respecto a la foto anterior.\n// El nodo anterior ya refrescó la foto, así que el mismo cambio no se vuelve a alertar.\n// La primera vez que corre, la foto se llena (si estaba vacía) y no alerta.\nconst cambios = $('Consultar PostgreSQL').all().map(i => i.json).filter(r => r.name);\nif (cambios.length === 0) return [];\nreturn [{ json: {\n  codigo: 'R5',\n  severidad: 'ADVERTENCIA',\n  tipo: 'Cambio de parámetros de configuración',\n  tabla: 'vw_settings_servidor',\n  detalle: 'Cambios: ' + cambios.map(c => `${c.name}: ${c.antes} → ${c.ahora}`).join('; '),\n  query: 'ALTER SYSTEM / postgresql.conf',\n  usuario: 'N/A (revisar log de PostgreSQL)',\n  accion: 'Confirmar que el cambio estaba aprobado; si no, revertir con ALTER SYSTEM RESET y pg_reload_conf().'\n}}];\n"
+      },
+      "id": "90f365bd-bfc6-4fbb-9c8c-d8bf3e7e02ab",
+      "name": "¿Hay alerta? (arma JSON)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "enviarAlertaNA01",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "1a6d21fb-66da-40dc-b47f-8f20658fe449",
+      "name": "Enviar_Alerta",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        880,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Cada 1 minuto": {
+      "main": [
+        [
+          {
+            "node": "Consultar PostgreSQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar PostgreSQL": {
+      "main": [
+        [
+          {
+            "node": "Refrescar foto (snapshot)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Refrescar foto (snapshot)": {
+      "main": [
+        [
+          {
+            "node": "¿Hay alerta? (arma JSON)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay alerta? (arma JSON)": {
+      "main": [
+        [
+          {
+            "node": "Enviar_Alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Costa_Rica",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "versionId": "9cd2bf44-46b0-46d5-9a2d-aae956ba0741",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

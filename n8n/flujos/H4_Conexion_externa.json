@@ -1,0 +1,126 @@
+{
+  "id": "alertaH4RedEx001",
+  "name": "H4 - Conexion desde red externa",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "ddcac3ed-a7eb-482e-b8ab-f7e78c992376",
+      "name": "Cada 1 minuto",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT usename, client_addr::text AS client_addr,\n       to_char(backend_start, 'YYYY-MM-DD HH24:MI:SS') AS inicio\nFROM pg_stat_activity\nWHERE client_addr IS NOT NULL\n  AND NOT (client_addr <<= inet '172.16.0.0/12');",
+        "options": {}
+      },
+      "id": "5716e9f1-3c59-4b1b-aee9-1817d395a3b9",
+      "name": "Consultar PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        220,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgMonitorN8N0001",
+          "name": "Postgres monitor_n8n"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Evita repetir la MISMA alerta cada minuto (espera 10 min).\n// Nota: al probar con \"Execute workflow\" a mano, n8n no guarda esta memoria,\n// así que en pruebas manuales siempre alerta. Con el flujo activo sí la guarda.\nfunction primeraVez(clave, minutos = 10) {\n  const sd = $getWorkflowStaticData('global');\n  const ahora = Date.now();\n  sd.vistos = sd.vistos || {};\n  for (const k of Object.keys(sd.vistos)) {\n    if (ahora - sd.vistos[k] > 24 * 3600 * 1000) delete sd.vistos[k];\n  }\n  if (sd.vistos[clave] && ahora - sd.vistos[clave] < minutos * 60 * 1000) return false;\n  sd.vistos[clave] = ahora;\n  return true;\n}\n\n// H4: conexión desde fuera de la red Docker (172.16.0.0/12)\nconst filas = $input.all().map(i => i.json).filter(r => r.client_addr);\nif (filas.length === 0) return [];\nconst clave = 'H4:' + filas.map(r => r.client_addr + r.inicio).sort().join('|');\nif (!primeraVez(clave)) return [];\nreturn [{ json: {\n  codigo: 'H4',\n  severidad: 'CRÍTICA',\n  tipo: 'Conexión desde fuera de la red Docker',\n  tabla: 'pg_stat_activity',\n  detalle: `Conexiones externas: ${filas.length}. ` +\n    [...new Set(filas.map(r => `${r.usename} desde ${r.client_addr}`))].slice(0, 5).join('; '),\n  query: \"SELECT ... WHERE NOT (client_addr <<= inet '172.16.0.0/12')\",\n  usuario: [...new Set(filas.map(r => r.usename))].join(', '),\n  accion: 'Terminar la sesión (pg_terminate_backend), revisar pg_hba.conf y las redes conectadas al contenedor.'\n}}];\n"
+      },
+      "id": "05e22f8a-44a4-4d22-95b7-24ee4155aaa4",
+      "name": "¿Hay alerta? (arma JSON)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "enviarAlertaNA01",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "33c02690-b02b-4bdc-8f6c-1b4de479e7ad",
+      "name": "Enviar_Alerta",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        660,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Cada 1 minuto": {
+      "main": [
+        [
+          {
+            "node": "Consultar PostgreSQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar PostgreSQL": {
+      "main": [
+        [
+          {
+            "node": "¿Hay alerta? (arma JSON)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay alerta? (arma JSON)": {
+      "main": [
+        [
+          {
+            "node": "Enviar_Alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Costa_Rica",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "versionId": "f1d16f1c-1192-4578-bf51-2d001ac9daaf",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

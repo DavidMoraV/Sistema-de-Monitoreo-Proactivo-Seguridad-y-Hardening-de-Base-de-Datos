@@ -1,0 +1,587 @@
+{
+  "id": "botTelegramNA001",
+  "name": "Bot Telegram - Consultas (Groq + agente_ia)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "seconds",
+              "secondsInterval": 10
+            }
+          ]
+        }
+      },
+      "id": "f02d9dbf-0667-42a4-98b8-ed19500818ff",
+      "name": "Cada 10 segundos",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Lee el último update procesado (memoria del flujo) para pedirle a Telegram solo lo nuevo.\nconst sd = $getWorkflowStaticData('global');\nreturn [{ json: { offset: sd.offset || 0 } }];\n"
+      },
+      "id": "9cb75928-0fe9-43d7-98a0-c77e3a05b47d",
+      "name": "Leer offset",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/getUpdates",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "offset",
+              "value": "={{ $json.offset }}"
+            },
+            {
+              "name": "timeout",
+              "value": "0"
+            },
+            {
+              "name": "limit",
+              "value": "1"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "b3db47a8-3c8a-4057-9168-6fd74593cd65",
+      "name": "Telegram getUpdates",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Toma UN mensaje nuevo por ciclo (el más antiguo) y avanza el offset.\n// Solo atiende el chat autorizado (TELEGRAM_CHAT_ID): nadie más puede consultar la BD.\nconst sd = $getWorkflowStaticData('global');\nconst updates = $input.first().json.result || [];\nif (updates.length === 0) return [];\nconst u = updates[0];\nsd.offset = u.update_id + 1;\nconst msg = u.message || u.edited_message;\nif (!msg || !msg.text) return [];\nconst chatPermitido = String($env.TELEGRAM_CHAT_ID);\nif (String(msg.chat.id) !== chatPermitido) return [];\n// En grupos, quitar la mención al bot (@MiBot) si viene\nconst texto = msg.text.replace(/^\\/\\w+(@\\w+)?\\s*/, '').replace(/@\\w+/g, '').trim();\nif (!texto || texto.startsWith('/start')) return [];\nreturn [{ json: { message: { text: texto, chat: { id: msg.chat.id } }, usuario: msg.from?.username || msg.from?.first_name || 'desconocido' } }];\n"
+      },
+      "id": "676afaef-8632-443f-a6b6-ae5048345700",
+      "name": "Extraer mensaje",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== PUNTO DE INSERCIÓN M5: filtro anti-SQLi (código del plan, sección M5 paso 6) =====\n// Filtro de entrada del bot de Telegram\nconst texto = $json.message?.text ?? '';\nconst palabras = 'drop|delete|update|insert|alter|grant|revoke|truncate|union|exec';\nconst patronPeligroso = new RegExp(String.raw`(;|--|/\\*|\\b(${palabras})\\b)`, 'i');\nreturn [{ json: { texto, bloqueado: patronPeligroso.test(texto), chat_id: $json.message?.chat?.id, usuario: $json.usuario } }];\n"
+      },
+      "id": "ac440c7e-d299-44e9-8941-f0efae86ebd6",
+      "name": "Filtro anti-SQLi (M5)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "01312de1-1d9a-47e0-91b8-4c9c2664f7fb",
+              "leftValue": "={{ $json.bloqueado }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "2a0142ea-df30-4347-9617-bc710f8afff6",
+      "name": "¿Bloqueado?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ \"INSERT INTO auditoria_datos (tabla, operacion, valor_nuevo) VALUES ('telegram_bot', 'BLOQUEO', jsonb_build_object('mensaje', $na$\" + String($json.texto).replace(/\\$na\\$/g, '') + \"$na$, 'chat_id', '\" + $json.chat_id + \"'));\" }}",
+        "options": {}
+      },
+      "id": "34589d81-ec8d-470c-9fa6-8e155c8cd6dd",
+      "name": "Registrar bloqueo",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1320,
+        -200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgMonitorN8N0001",
+          "name": "Postgres monitor_n8n"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT table_name,\n       string_agg(column_name || ' ' || data_type, ', ' ORDER BY ordinal_position) AS columnas\nFROM information_schema.columns\nWHERE table_schema = 'public'\n  AND table_name NOT LIKE 'pg_settings%'\nGROUP BY table_name\nORDER BY table_name;",
+        "options": {}
+      },
+      "id": "f294ad87-0660-4032-9c8a-bf66a3c56e3b",
+      "name": "Leer esquema (agente_ia)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1320,
+        100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgAgenteIA000001",
+          "name": "Postgres agente_ia"
+        }
+      },
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Arma la petición a Groq para convertir la pregunta en SQL.\n// El esquema se lee en vivo de la BD, así que si M2 cambia una columna no hay que tocar nada.\nconst pregunta = $('Filtro anti-SQLi (M5)').first().json.texto;\nconst esquema = $input.all().map(i => `${i.json.table_name}(${i.json.columnas})`).join('\\n');\n// Modelo de Groq: si algún día lo retiran, cámbielo aquí y en el nodo \"Prompt: resultado → respuesta\"\n// (lista vigente: https://console.groq.com/docs/models)\nconst body = {\n  model: 'openai/gpt-oss-120b',\n  reasoning_effort: 'low',\n  temperature: 0,\n  max_tokens: 2000,\n  messages: [\n    { role: 'system', content:\n`Eres un asistente de NutriAnimales S.A. que traduce preguntas en español a UNA sola consulta SQL de PostgreSQL.\nReglas:\n- Solo SELECT (o WITH ... SELECT). Nunca INSERT, UPDATE, DELETE, DROP, ALTER, GRANT ni nada que modifique datos.\n- Usa únicamente estas tablas y columnas:\n${esquema}\n- Responde SOLO con el SQL, sin explicación, sin comentarios y sin bloques de código.\n- Si la pregunta no se puede responder con estas tablas, responde exactamente: NO_SQL` },\n    { role: 'user', content: pregunta }\n  ]\n};\nreturn [{ json: { body } }];\n"
+      },
+      "id": "2c6c8d3f-359f-4bf0-b2b3-658db9e3962d",
+      "name": "Prompt: pregunta → SQL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "428946e7-4ffe-453d-825a-656bbaed3dcb",
+      "name": "Groq: generar SQL",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1760,
+        100
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "groqHeaderNA0001",
+          "name": "Groq API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Segunda barrera (plan M5): aceptar del SQL de Groq solo sentencias de lectura.\nlet sql = String($json.choices?.[0]?.message?.content || '').trim();\nsql = sql.replace(/^```(sql)?/i, '').replace(/```$/, '').trim().replace(/;\\s*$/, '');\nconst chat_id = $('Filtro anti-SQLi (M5)').first().json.chat_id;\nconst prohibidas = /\\b(insert|update|delete|drop|alter|grant|revoke|truncate|create|copy|exec|call|do|pg_read_file|pg_ls_dir|lo_import|set)\\b/i;\nlet valido = true, motivo = '';\nif (!sql || sql === 'NO_SQL') { valido = false; motivo = 'No encontré cómo responder esa pregunta con los datos disponibles.'; }\nelse if (!/^(select|with)\\b/i.test(sql)) { valido = false; motivo = 'Consulta rechazada por política de seguridad (solo lectura).'; }\nelse if (sql.includes(';') || prohibidas.test(sql)) { valido = false; motivo = 'Consulta rechazada por política de seguridad.'; }\n// Limitar filas para no devolver tablas completas\nconst sql_final = valido ? `SELECT * FROM (\\n${sql}\\n) AS consulta LIMIT 50` : '';\nreturn [{ json: { sql: sql_final, sql_original: sql, valido, motivo, chat_id } }];\n"
+      },
+      "id": "010511c1-e9cc-4298-8494-5ff8bd9d06b3",
+      "name": "Validar SQL (solo SELECT)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "9015e10e-9cd9-4b34-8b2e-9830f72153ae",
+              "leftValue": "={{ $json.valido }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "17ca217c-1e45-453d-9c2e-cb2e46713e79",
+      "name": "¿SQL válido?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.sql }}",
+        "options": {}
+      },
+      "id": "c236d68f-5e37-4233-9111-1df250cd9223",
+      "name": "Ejecutar SQL (agente_ia)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2420,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgAgenteIA000001",
+          "name": "Postgres agente_ia"
+        }
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Arma la petición a Groq para explicar el resultado en lenguaje natural.\nconst pregunta = $('Filtro anti-SQLi (M5)').first().json.texto;\nconst sql = $('Validar SQL (solo SELECT)').first().json.sql_original;\nconst filas = $input.all().map(i => i.json).filter(r => Object.keys(r).length > 0);\nlet resultado;\nif (filas.length === 1 && filas[0].error) {\n  resultado = 'ERROR al ejecutar: ' + (filas[0].error.message || JSON.stringify(filas[0].error));\n} else {\n  resultado = JSON.stringify(filas).slice(0, 6000);\n}\nconst body = {\n  model: 'openai/gpt-oss-120b',\n  reasoning_effort: 'low',\n  temperature: 0.2,\n  max_tokens: 2000,\n  messages: [\n    { role: 'system', content: 'Eres el asistente de datos de NutriAnimales S.A. Responde en español, breve y claro, usando SOLO los resultados entregados. Si hubo error o no hay filas, dilo con honestidad. No inventes datos.' },\n    { role: 'user', content: `Pregunta: ${pregunta}\\nSQL ejecutado: ${sql}\\nResultado (JSON): ${resultado}` }\n  ]\n};\nreturn [{ json: { body } }];\n"
+      },
+      "id": "d4c19853-1ed8-4ea4-9a49-ea47de0743d9",
+      "name": "Prompt: resultado → respuesta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "fc8900c2-4011-4151-9fe5-ba7cdd5a7bf9",
+      "name": "Groq: redactar respuesta",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2860,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "groqHeaderNA0001",
+          "name": "Groq API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Filtro anti-SQLi (M5)').first().json.chat_id }}",
+        "text": "={{ String($json.choices[0].message.content).slice(0, 4000) }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "38f49960-1b49-44c7-a6db-3395fa13749f",
+      "name": "Responder al usuario",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        3080,
+        0
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "telegramNA000001",
+          "name": "Telegram Bot NutriAnimales"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.motivo }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "78c37d58-5001-4dd6-aa08-0dd3da43f213",
+      "name": "Responder: no válida",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2200,
+        200
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "telegramNA000001",
+          "name": "Telegram Bot NutriAnimales"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Filtro anti-SQLi (M5)').item.json.chat_id }}",
+        "text": "Consulta rechazada por política de seguridad.",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "64d67302-35f0-45a5-9e54-1cc908e09021",
+      "name": "Responder: rechazada",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1540,
+        -200
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "telegramNA000001",
+          "name": "Telegram Bot NutriAnimales"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Cada 10 segundos": {
+      "main": [
+        [
+          {
+            "node": "Leer offset",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer offset": {
+      "main": [
+        [
+          {
+            "node": "Telegram getUpdates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram getUpdates": {
+      "main": [
+        [
+          {
+            "node": "Extraer mensaje",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extraer mensaje": {
+      "main": [
+        [
+          {
+            "node": "Filtro anti-SQLi (M5)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filtro anti-SQLi (M5)": {
+      "main": [
+        [
+          {
+            "node": "¿Bloqueado?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Bloqueado?": {
+      "main": [
+        [
+          {
+            "node": "Registrar bloqueo",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Leer esquema (agente_ia)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Registrar bloqueo": {
+      "main": [
+        [
+          {
+            "node": "Responder: rechazada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer esquema (agente_ia)": {
+      "main": [
+        [
+          {
+            "node": "Prompt: pregunta → SQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prompt: pregunta → SQL": {
+      "main": [
+        [
+          {
+            "node": "Groq: generar SQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq: generar SQL": {
+      "main": [
+        [
+          {
+            "node": "Validar SQL (solo SELECT)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validar SQL (solo SELECT)": {
+      "main": [
+        [
+          {
+            "node": "¿SQL válido?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿SQL válido?": {
+      "main": [
+        [
+          {
+            "node": "Ejecutar SQL (agente_ia)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Responder: no válida",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ejecutar SQL (agente_ia)": {
+      "main": [
+        [
+          {
+            "node": "Prompt: resultado → respuesta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prompt: resultado → respuesta": {
+      "main": [
+        [
+          {
+            "node": "Groq: redactar respuesta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq: redactar respuesta": {
+      "main": [
+        [
+          {
+            "node": "Responder al usuario",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Costa_Rica",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "versionId": "bc9d1476-2465-4edf-a983-86e320da1397",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

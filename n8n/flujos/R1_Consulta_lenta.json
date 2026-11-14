@@ -1,0 +1,126 @@
+{
+  "id": "alertaR1Lenta001",
+  "name": "R1 - Consulta lenta",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "d812f128-02cd-4ca9-b720-6f2dd5c43090",
+      "name": "Cada 1 minuto",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT s.queryid::text AS queryid,\n       left(s.query, 300)       AS query,\n       s.calls,\n       s.total_exec_time,\n       round(s.mean_exec_time)  AS ms,\n       r.rolname                AS usuario\nFROM pg_stat_statements s\nLEFT JOIN pg_roles r ON r.oid = s.userid\nWHERE s.max_exec_time > 1000\n  AND s.query NOT ILIKE '%pg_stat_statements%'\nORDER BY s.mean_exec_time DESC\nLIMIT 20;",
+        "options": {}
+      },
+      "id": "62051bb5-e70f-4cce-b151-3a6cb9f6a39b",
+      "name": "Consultar PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        220,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgMonitorN8N0001",
+          "name": "Postgres monitor_n8n"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// R1: consulta lenta (> 1 s).\n// pg_stat_statements ACUMULA. Para no alertar siempre lo mismo, se compara contra la\n// lectura anterior: solo cuentan las ejecuciones NUEVAS cuyo promedio supera 1000 ms.\nconst sd = $getWorkflowStaticData('global');\nsd.prev = sd.prev || {};\nconst lentas = [];\nfor (const { json: r } of $input.all()) {\n  if (!r.queryid) continue;\n  const prev = sd.prev[r.queryid];\n  const dCalls = prev ? r.calls - prev.calls : r.calls;\n  const dTiempo = prev ? r.total_exec_time - prev.total : r.total_exec_time;\n  sd.prev[r.queryid] = { calls: r.calls, total: r.total_exec_time };\n  if (dCalls > 0 && dTiempo / dCalls > 1000) {\n    lentas.push({ ...r, ms_nuevas: Math.round(dTiempo / dCalls) });\n  }\n}\nif (lentas.length === 0) return [];\nconst peor = lentas.sort((a, b) => b.ms_nuevas - a.ms_nuevas)[0];\nreturn [{ json: {\n  codigo: 'R1',\n  severidad: 'ADVERTENCIA',\n  tipo: 'Consulta lenta detectada (> 1 s)',\n  tabla: 'pg_stat_statements',\n  detalle: `Duración promedio: ${peor.ms_nuevas} ms (umbral: 1000 ms). Consultas lentas nuevas: ${lentas.length}`,\n  query: peor.query,\n  usuario: peor.usuario || 'desconocido',\n  accion: 'Revisar plan de ejecución (EXPLAIN ANALYZE) e índices de la consulta.'\n}}];\n"
+      },
+      "id": "7b94696b-15f5-4767-be59-cbd9709fc086",
+      "name": "¿Hay alerta? (arma JSON)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "enviarAlertaNA01",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "30927a0c-2b1c-451a-9764-751cd03ce86e",
+      "name": "Enviar_Alerta",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        660,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Cada 1 minuto": {
+      "main": [
+        [
+          {
+            "node": "Consultar PostgreSQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar PostgreSQL": {
+      "main": [
+        [
+          {
+            "node": "¿Hay alerta? (arma JSON)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay alerta? (arma JSON)": {
+      "main": [
+        [
+          {
+            "node": "Enviar_Alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Costa_Rica",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "versionId": "0c635f0b-e150-47d5-aacc-a19034460fb6",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

@@ -1,0 +1,126 @@
+{
+  "id": "alertaR1Lenta001",
+  "name": "R1 - Consulta lenta",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "3ed726e6-cbc0-49d9-9dfd-55c160ac719e",
+      "name": "Cada 1 minuto",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT pg_read_file('log/' || name) AS contenido,\n       to_char((now() - interval '75 seconds') AT TIME ZONE current_setting('log_timezone'),\n               'YYYY-MM-DD HH24:MI:SS') AS desde\nFROM pg_ls_logdir()\nWHERE name LIKE '%.log'\nORDER BY modification DESC\nLIMIT 1;",
+        "options": {}
+      },
+      "id": "7c0e17be-a71b-4287-886c-16565bce840c",
+      "name": "Consultar PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        220,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgMonitorN8N0001",
+          "name": "Postgres monitor_n8n"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// R1: consulta lenta (> 1 s).\n// PostgreSQL anota en su log cada sentencia que tarda más que log_min_duration_statement (1000 ms,\n// baseline de M2) con su hora exacta. Se leen las del último minuto: no hace falta recordar nada\n// entre ejecuciones, y Enviar_Alerta descarta repetidos.\nconst UMBRAL = 1000;\nconst r = $input.first().json;\nconst desde = r.desde || '';\nconst lentas = [];\nfor (const l of String(r.contenido || '').split('\\n')) {\n  if (l.slice(0, 19) < desde) continue;\n  const m = l.match(/duration: ([\\d.]+) ms\\s+statement: (.*)$/);\n  if (!m || Number(m[1]) <= UMBRAL) continue;\n  const usuario = (l.match(/\\] (\\S+)@/) || [])[1] || 'desconocido';\n  lentas.push({ ms: Math.round(Number(m[1])), query: m[2].slice(0, 300), usuario });\n}\nif (lentas.length === 0) return [];\nconst peor = lentas.sort((a, b) => b.ms - a.ms)[0];\nreturn [{ json: {\n  codigo: 'R1',\n  severidad: 'ADVERTENCIA',\n  tipo: 'Consulta lenta detectada (> 1 s)',\n  tabla: 'Log de PostgreSQL (log_min_duration_statement)',\n  detalle: `Duración: ${peor.ms} ms (umbral: ${UMBRAL} ms). Consultas lentas en el último minuto: ${lentas.length}`,\n  query: peor.query,\n  usuario: peor.usuario,\n  accion: 'Revisar plan de ejecución (EXPLAIN ANALYZE) e índices de la consulta.'\n}}];\n"
+      },
+      "id": "1a2c89a9-da13-409d-a281-a33ce350f90c",
+      "name": "¿Hay alerta? (arma JSON)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "enviarAlertaNA01",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "8ee947f7-56fc-46ae-bbc6-cc0f124c45d6",
+      "name": "Enviar_Alerta",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        660,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Cada 1 minuto": {
+      "main": [
+        [
+          {
+            "node": "Consultar PostgreSQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar PostgreSQL": {
+      "main": [
+        [
+          {
+            "node": "¿Hay alerta? (arma JSON)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay alerta? (arma JSON)": {
+      "main": [
+        [
+          {
+            "node": "Enviar_Alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Costa_Rica",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "versionId": "81a64f52-06bf-407c-9ecf-db7bdf0d1049",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

@@ -1,0 +1,126 @@
+{
+  "id": "alertaH4RedEx001",
+  "name": "H4 - Conexion desde red externa",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "136f6b52-dea4-45df-a4d8-bdc5537c3f9c",
+      "name": "Cada 1 minuto",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT usename, client_addr::text AS client_addr,\n       to_char(backend_start, 'YYYY-MM-DD HH24:MI:SS') AS inicio\nFROM pg_stat_activity\nWHERE client_addr IS NOT NULL\n  AND NOT (client_addr <<= inet '172.16.0.0/12');",
+        "options": {}
+      },
+      "id": "91c2b343-cad7-47ed-ba01-376bde45f512",
+      "name": "Consultar PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        220,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgMonitorN8N0001",
+          "name": "Postgres monitor_n8n"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// La anti-repetición (misma alerta en 10 min) la hace Enviar_Alerta consultando alertas_auditoria.\n// (En N8N 2.x la memoria del flujo no se conserva entre ejecuciones de flujos publicados.)\nfunction primeraVez() { return true; }\n\n// H4: conexión desde fuera de la red Docker (172.16.0.0/12)\nconst filas = $input.all().map(i => i.json).filter(r => r.client_addr);\nif (filas.length === 0) return [];\nconst clave = 'H4:' + filas.map(r => r.client_addr + r.inicio).sort().join('|');\nif (!primeraVez(clave)) return [];\nreturn [{ json: {\n  codigo: 'H4',\n  severidad: 'CRÍTICA',\n  tipo: 'Conexión desde fuera de la red Docker',\n  tabla: 'pg_stat_activity',\n  detalle: `Conexiones externas: ${filas.length}. ` +\n    [...new Set(filas.map(r => `${r.usename} desde ${r.client_addr}`))].slice(0, 5).join('; '),\n  query: \"SELECT ... WHERE NOT (client_addr <<= inet '172.16.0.0/12')\",\n  usuario: [...new Set(filas.map(r => r.usename))].join(', '),\n  accion: 'Terminar la sesión (pg_terminate_backend), revisar pg_hba.conf y las redes conectadas al contenedor.'\n}}];\n"
+      },
+      "id": "9ce5d508-ec91-48b8-a9a4-05e152313991",
+      "name": "¿Hay alerta? (arma JSON)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "enviarAlertaNA01",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "94316a65-0e5f-4cd1-8317-331da636fa33",
+      "name": "Enviar_Alerta",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        660,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Cada 1 minuto": {
+      "main": [
+        [
+          {
+            "node": "Consultar PostgreSQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar PostgreSQL": {
+      "main": [
+        [
+          {
+            "node": "¿Hay alerta? (arma JSON)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay alerta? (arma JSON)": {
+      "main": [
+        [
+          {
+            "node": "Enviar_Alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Costa_Rica",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "versionId": "4c7186c5-d6a0-468f-9980-848d69d93b05",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

@@ -1,0 +1,126 @@
+{
+  "id": "alertaH3Privi001",
+  "name": "H3 - Permisos de escritura en agente_ia",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "74dd735c-09c6-46f9-8161-12dfad3be0a0",
+      "name": "Cada 1 minuto",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT c.relname AS tabla, p.priv\nFROM pg_class c\nJOIN pg_namespace n ON n.oid = c.relnamespace\nCROSS JOIN unnest(ARRAY['INSERT','UPDATE','DELETE','TRUNCATE']) AS p(priv)\nWHERE n.nspname = 'public' AND c.relkind = 'r'\n  AND has_table_privilege('agente_ia', c.oid, p.priv);",
+        "options": {}
+      },
+      "id": "271d2320-98c5-4aff-827b-3e4e61ef8950",
+      "name": "Consultar PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        220,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgMonitorN8N0001",
+          "name": "Postgres monitor_n8n"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// La anti-repetición (misma alerta en 10 min) la hace Enviar_Alerta consultando alertas_auditoria.\n// (En N8N 2.x la memoria del flujo no se conserva entre ejecuciones de flujos publicados.)\nfunction primeraVez() { return true; }\n\n// H3: el usuario de solo lectura agente_ia recibió permisos de escritura\nconst filas = $input.all().map(i => i.json).filter(r => r.tabla);\nif (filas.length === 0) return [];\nconst privs = [...new Set(filas.map(r => r.priv))].join(', ');\nconst tablas = [...new Set(filas.map(r => r.tabla))];\nif (!primeraVez('H3:' + privs + ':' + tablas.length)) return [];\nreturn [{ json: {\n  codigo: 'H3',\n  severidad: 'CRÍTICA',\n  tipo: 'Escalada de privilegios en agente_ia',\n  tabla: tablas.slice(0, 5).join(', ') + (tablas.length > 5 ? ` (+${tablas.length - 5} más)` : ''),\n  detalle: `agente_ia (solo lectura) tiene ahora: ${privs} en ${tablas.length} tabla(s)`,\n  query: 'GRANT ... TO agente_ia',\n  usuario: 'agente_ia',\n  accion: 'Revocar de inmediato: REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA public FROM agente_ia;'\n}}];\n"
+      },
+      "id": "e15eedc6-7c66-495a-a264-db4f98456704",
+      "name": "¿Hay alerta? (arma JSON)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "enviarAlertaNA01",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "bb2c50f8-ecec-4981-a383-554b68c9ba14",
+      "name": "Enviar_Alerta",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        660,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Cada 1 minuto": {
+      "main": [
+        [
+          {
+            "node": "Consultar PostgreSQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar PostgreSQL": {
+      "main": [
+        [
+          {
+            "node": "¿Hay alerta? (arma JSON)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay alerta? (arma JSON)": {
+      "main": [
+        [
+          {
+            "node": "Enviar_Alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Costa_Rica",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "versionId": "060539e6-b1fc-43ec-933d-5d29cf87250e",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

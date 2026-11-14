@@ -1,0 +1,126 @@
+{
+  "id": "alertaR2Conex001",
+  "name": "R2 - Exceso de conexiones",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "72b46f9b-e8e8-4d45-b49e-7a189f466fa9",
+      "name": "Cada 1 minuto",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT count(*)::int AS conexiones,\n       string_agg(DISTINCT usename, ', ') AS usuarios\nFROM pg_stat_activity\nWHERE backend_type = 'client backend';",
+        "options": {}
+      },
+      "id": "15f9af62-c871-4532-bc90-0436928fc631",
+      "name": "Consultar PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        220,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgMonitorN8N0001",
+          "name": "Postgres monitor_n8n"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// La anti-repetición (misma alerta en 10 min) la hace Enviar_Alerta consultando alertas_auditoria.\n// (En N8N 2.x la memoria del flujo no se conserva entre ejecuciones de flujos publicados.)\nfunction primeraVez() { return true; }\n\n// R2: más de 10 conexiones activas\nconst UMBRAL = 10;\nconst r = $input.first().json;\nif (!(r.conexiones > UMBRAL)) return [];\nif (!primeraVez('R2')) return [];\nreturn [{ json: {\n  codigo: 'R2',\n  severidad: 'ADVERTENCIA',\n  tipo: 'Exceso de conexiones activas',\n  tabla: 'pg_stat_activity',\n  detalle: `Conexiones activas: ${r.conexiones} (umbral: ${UMBRAL}). Usuarios: ${r.usuarios}`,\n  query: \"SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend'\",\n  usuario: r.usuarios,\n  accion: 'Identificar el origen de las conexiones y terminar las sesiones innecesarias (pg_terminate_backend).'\n}}];\n"
+      },
+      "id": "0ef4f52a-b032-4038-b268-a225f4bd13f6",
+      "name": "¿Hay alerta? (arma JSON)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "enviarAlertaNA01",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "32b3cad6-3979-4e85-8b90-0b26f5564629",
+      "name": "Enviar_Alerta",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        660,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Cada 1 minuto": {
+      "main": [
+        [
+          {
+            "node": "Consultar PostgreSQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar PostgreSQL": {
+      "main": [
+        [
+          {
+            "node": "¿Hay alerta? (arma JSON)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay alerta? (arma JSON)": {
+      "main": [
+        [
+          {
+            "node": "Enviar_Alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Costa_Rica",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "versionId": "6b4e44e2-004e-4af9-bbc0-cbb6b799cb06",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

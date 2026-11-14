@@ -1,0 +1,126 @@
+{
+  "id": "alertaH5Basel001",
+  "name": "H5 - Desvio del baseline",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "5ea8d055-c641-4b2a-96ee-761860100d48",
+      "name": "Cada 1 minuto",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT s.name, s.setting AS actual, b.valor_esperado\nFROM pg_settings s\nJOIN pg_settings_baseline b ON b.name = s.name\nWHERE s.setting <> b.valor_esperado;",
+        "options": {}
+      },
+      "id": "eed062a4-525d-42db-9577-691085011ef3",
+      "name": "Consultar PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        220,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgMonitorN8N0001",
+          "name": "Postgres monitor_n8n"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// La anti-repetición (misma alerta en 10 min) la hace Enviar_Alerta consultando alertas_auditoria.\n// (En N8N 2.x la memoria del flujo no se conserva entre ejecuciones de flujos publicados.)\nfunction primeraVez() { return true; }\n\n// H5: desvío del baseline de seguridad (pg_settings_baseline de M2)\nconst filas = $input.all().map(i => i.json).filter(r => r.name);\nif (filas.length === 0) return [];\nconst clave = 'H5:' + filas.map(r => r.name + '=' + r.actual).sort().join('|');\nif (!primeraVez(clave)) return [];\nreturn [{ json: {\n  codigo: 'H5',\n  severidad: 'CRÍTICA',\n  tipo: 'Desvío del baseline de seguridad',\n  tabla: 'pg_settings_baseline',\n  detalle: 'Parámetros fuera de baseline: ' + filas.map(r => `${r.name} = ${r.actual} (esperado: ${r.valor_esperado})`).join('; '),\n  query: 'ALTER SYSTEM SET ...',\n  usuario: 'N/A (revisar log de PostgreSQL)',\n  accion: 'Restaurar el valor seguro: ALTER SYSTEM RESET <parámetro>; SELECT pg_reload_conf();'\n}}];\n"
+      },
+      "id": "a84d26f3-e6ac-4647-9919-55d18c3378d6",
+      "name": "¿Hay alerta? (arma JSON)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "enviarAlertaNA01",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "dfcffd01-2d20-4fdc-92b3-cb8aa667a1be",
+      "name": "Enviar_Alerta",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        660,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Cada 1 minuto": {
+      "main": [
+        [
+          {
+            "node": "Consultar PostgreSQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar PostgreSQL": {
+      "main": [
+        [
+          {
+            "node": "¿Hay alerta? (arma JSON)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay alerta? (arma JSON)": {
+      "main": [
+        [
+          {
+            "node": "Enviar_Alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Costa_Rica",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "versionId": "410ebc6b-1844-4fe9-889d-3c45bf8204c6",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

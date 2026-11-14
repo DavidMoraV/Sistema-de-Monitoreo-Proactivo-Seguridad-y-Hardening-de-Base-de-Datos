@@ -1,0 +1,126 @@
+{
+  "id": "alertaR3Horar001",
+  "name": "R3 - Conexion fuera de horario",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "5151a1d0-b89c-4c7f-af22-afa2361d674b",
+      "name": "Cada 1 minuto",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT usename, client_addr::text AS client_addr,\n       to_char(backend_start, 'YYYY-MM-DD HH24:MI:SS') AS inicio,\n       extract(hour FROM now())::int AS hora_actual\nFROM pg_stat_activity\nWHERE backend_type = 'client backend'\n  AND usename <> 'monitor_n8n';",
+        "options": {}
+      },
+      "id": "b9da704a-24ff-4aa6-ae38-dc11dbe8e3cb",
+      "name": "Consultar PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        220,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgMonitorN8N0001",
+          "name": "Postgres monitor_n8n"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// La anti-repetición (misma alerta en 10 min) la hace Enviar_Alerta consultando alertas_auditoria.\n// (En N8N 2.x la memoria del flujo no se conserva entre ejecuciones de flujos publicados.)\nfunction primeraVez() { return true; }\n\n// R3: conexión fuera de horario (entre 11 pm y 6 am).\n// PARA PROBAR DE DÍA: cambie temporalmente HORA_INICIO a la hora actual (ej. 15) y documéntelo.\nconst HORA_INICIO = 23;   // 11 pm\nconst HORA_FIN = 6;       // 6 am\nconst filas = $input.all().map(i => i.json).filter(r => r.usename);\nif (filas.length === 0) return [];\nconst h = filas[0].hora_actual;\nconst fueraDeHorario = HORA_INICIO > HORA_FIN\n  ? (h >= HORA_INICIO || h < HORA_FIN)\n  : (h >= HORA_INICIO && h < HORA_FIN);\nif (!fueraDeHorario) return [];\nconst clave = 'R3:' + filas.map(r => r.usename + r.inicio).sort().join('|');\nif (!primeraVez(clave)) return [];\nreturn [{ json: {\n  codigo: 'R3',\n  severidad: 'ADVERTENCIA',\n  tipo: 'Conexión fuera de horario laboral',\n  tabla: 'pg_stat_activity',\n  detalle: 'Sesiones: ' + filas.map(r => `${r.usename} desde ${r.client_addr || 'local'} (inicio ${r.inicio})`).join('; '),\n  query: 'SELECT usename, client_addr, backend_start FROM pg_stat_activity ...',\n  usuario: [...new Set(filas.map(r => r.usename))].join(', '),\n  accion: 'Verificar con el dueño de la cuenta si el acceso estaba autorizado.'\n}}];\n"
+      },
+      "id": "a7ba1415-721a-4754-82eb-bdae3fb411ca",
+      "name": "¿Hay alerta? (arma JSON)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "enviarAlertaNA01",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "e28bc1c6-9620-4a6f-8ed2-dbc92e0ef9f5",
+      "name": "Enviar_Alerta",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        660,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Cada 1 minuto": {
+      "main": [
+        [
+          {
+            "node": "Consultar PostgreSQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar PostgreSQL": {
+      "main": [
+        [
+          {
+            "node": "¿Hay alerta? (arma JSON)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay alerta? (arma JSON)": {
+      "main": [
+        [
+          {
+            "node": "Enviar_Alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Costa_Rica",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "versionId": "7422cc17-9f80-4ffc-a267-25769395a22b",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

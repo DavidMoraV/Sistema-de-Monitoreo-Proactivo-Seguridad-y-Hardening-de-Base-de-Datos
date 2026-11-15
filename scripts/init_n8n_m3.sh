@@ -47,6 +47,10 @@ IDS="enviarAlertaNA01 botTelegramNA001 alertaR1Lenta001 alertaR2Conex001 alertaR
 # M4: alertas de datos D1–D7 (n8n/flujos/D*.json). Van en la misma lista porque el paso 3 importa
 # toda la carpeta y n8n no deja sobrescribir un flujo activo.
 IDS="$IDS alertaD1Delet001 alertaD2Creci001 alertaD3Backu001 alertaD4Dupli001 alertaD5Bloqu001 alertaD6Updat001 alertaD7Exfil001"
+# M5: H1 (reglas UFW vía Loki) y H2 (integridad de pg_hba.conf/postgresql.conf). Mismo motivo:
+# el paso 3 importa toda la carpeta y fallaría si H1/H2 estuvieran activos. init_n8n_m5.sh sigue sirviendo
+# para cargar solo esos dos.
+IDS="$IDS alertaH1Ufw00001 alertaH2Hash0001"
 
 echo "3) Importando flujos..."
 # Si ya estaban activos (segunda vez que se corre el script), hay que desactivarlos antes:

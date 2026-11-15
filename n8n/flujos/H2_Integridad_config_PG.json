@@ -1,0 +1,176 @@
+{
+  "id": "alertaH2Hash0001",
+  "name": "H2 - Integridad de archivos de configuracion PostgreSQL",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "4df08fb7-d3fe-512f-af9b-5a64cf14cd0f",
+      "name": "Cada 1 minuto",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT 'pg_hba.conf' AS archivo,\n       md5(pg_read_file('pg_hba.conf')) AS hash_actual,\n       (SELECT hash FROM config_hashes WHERE archivo = 'pg_hba.conf') AS hash_guardado\nUNION ALL\nSELECT 'postgresql.conf',\n       md5(pg_read_file('postgresql.conf')),\n       (SELECT hash FROM config_hashes WHERE archivo = 'postgresql.conf');",
+        "options": {}
+      },
+      "id": "6d22b109-5dbf-5b2c-96d7-456144bedff8",
+      "name": "Hash actual vs guardado",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        220,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgMonitorN8N0001",
+          "name": "Postgres monitor_n8n"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// H2: alerta si cambia el hash de pg_hba.conf o postgresql.conf respecto al guardado.\n// Primera vez (sin hash guardado): no alerta; el otro camino del flujo guarda la referencia.\n// La anti-repetición (mismo código y detalle en 10 min) la hace Enviar_Alerta.\nconst alertas = [];\nfor (const it of $input.all()) {\n  const r = it.json;\n  if (!r.hash_guardado || r.hash_guardado === r.hash_actual) continue;\n  alertas.push({ json: {\n    codigo: 'H2',\n    severidad: 'CRÍTICA',\n    tipo: 'Archivo de configuración de PostgreSQL modificado',\n    tabla: r.archivo,\n    detalle: `${r.archivo}: hash de referencia ${r.hash_guardado.slice(0, 8)}… ≠ hash actual ${r.hash_actual.slice(0, 8)}…`,\n    query: `md5(pg_read_file('${r.archivo}'))`,\n    usuario: 'N/A (cambio a nivel de archivo)',\n    accion: 'Comparar el archivo con el respaldo, identificar quién lo cambió y restaurarlo. Si el cambio es legítimo, queda como nueva referencia.'\n  }});\n}\nreturn alertas;\n"
+      },
+      "id": "f6806576-de2c-5458-aa8c-83e2c6f5b51d",
+      "name": "Armar alertas",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "enviarAlertaNA01",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "15bce1db-5df7-5c47-8453-b77136746ffe",
+      "name": "Enviar_Alerta",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        660,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Guarda el hash actual como referencia cuando es la primera vez o cuando cambió\n// (se ejecuta después de enviar la alerta, así cada cambio alerta una sola vez).\nconst out = [];\nfor (const it of $input.all()) {\n  const r = it.json;\n  if (r.hash_guardado === r.hash_actual) continue;\n  // archivo y hash son fijos o hexadecimales: sin riesgo de inyección\n  const archivo = String(r.archivo).replace(/[^A-Za-z0-9_.]/g, '');\n  const hash = String(r.hash_actual).replace(/[^a-f0-9]/gi, '');\n  out.push({ json: { sql_upsert:\n    `INSERT INTO config_hashes (archivo, hash, actualizado) VALUES ('${archivo}', '${hash}', NOW()) ` +\n    `ON CONFLICT (archivo) DO UPDATE SET hash = EXCLUDED.hash, actualizado = NOW();` } });\n}\nreturn out;\n"
+      },
+      "id": "b268bc0f-4465-5c90-a51a-64f433906d12",
+      "name": "Armar hash de referencia",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.sql_upsert }}",
+        "options": {}
+      },
+      "id": "31ad7a12-8104-533f-868b-a67e327157a4",
+      "name": "Guardar hash de referencia",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        660,
+        100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgMonitorN8N0001",
+          "name": "Postgres monitor_n8n"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Cada 1 minuto": {
+      "main": [
+        [
+          {
+            "node": "Hash actual vs guardado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hash actual vs guardado": {
+      "main": [
+        [
+          {
+            "node": "Armar alertas",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Armar hash de referencia",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Armar alertas": {
+      "main": [
+        [
+          {
+            "node": "Enviar_Alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Armar hash de referencia": {
+      "main": [
+        [
+          {
+            "node": "Guardar hash de referencia",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "versionId": "45914d61-152f-56b3-9b48-7a3fd734fff3",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Costa_Rica",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

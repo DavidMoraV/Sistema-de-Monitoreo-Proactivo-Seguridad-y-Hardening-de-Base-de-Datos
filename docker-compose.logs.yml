@@ -1,0 +1,38 @@
+# =====================================================================
+#  docker-compose.logs.yml — M5: pipeline de logs del host (Alloy → Loki)
+#  Uso:  docker compose -f docker-compose.yml -f docker-compose.logs.yml up -d
+#  (M1 puede fusionarlo después dentro de docker-compose.yml)
+#  Ninguno de los dos servicios publica puertos: solo N8N los alcanza por la red interna.
+#  Requisitos en el host: /var/log/auth.log y /var/log/ufw.log (paquete rsyslog).
+# =====================================================================
+services:
+  loki:
+    image: grafana/loki:3.4.2
+    container_name: nutri_loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki-config.yml
+    volumes:
+      - ./logs/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki-data:/loki
+    networks:
+      - nutrianimales-net
+
+  alloy:
+    image: grafana/alloy:v1.8.2
+    container_name: nutri_alloy
+    restart: unless-stopped
+    command: run --server.http.listen-addr=127.0.0.1:12345 --storage.path=/var/lib/alloy/data /etc/alloy/config.alloy
+    group_add:
+      - "4"            # grupo "adm" del host (GID 4 en Ubuntu): puede leer auth.log y ufw.log
+    volumes:
+      - ./logs/alloy-config.alloy:/etc/alloy/config.alloy:ro
+      - /var/log:/var/log/host:ro      # solo lectura; se monta el directorio porque logrotate reemplaza los archivos
+      - alloy-data:/var/lib/alloy/data
+    depends_on:
+      - loki
+    networks:
+      - nutrianimales-net
+
+volumes:
+  loki-data:
+  alloy-data:

@@ -1,0 +1,126 @@
+{
+  "id": "alertaD5Bloqu001",
+  "name": "D5 - Transaccion bloqueada",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "b3fb17e9-fc25-58da-b0c8-f381bfebd334",
+      "name": "Cada 1 minuto",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- D5: sesión esperando un bloqueo (wait_event_type = 'Lock') hace más de 30 s.\n-- \"marca\" = PID + hora en que empezó a esperar: una alerta por bloqueo.\nSELECT * FROM (\n  SELECT a.pid, a.usename AS usuario,\n         round(extract(epoch FROM now() - a.query_start))::int AS segundos,\n         left(a.query, 200) AS query,\n         (SELECT string_agg(b.usename || ' (PID ' || b.pid || ', ' || b.state || '): ' || left(b.query, 80), '; ')\n            FROM pg_stat_activity b WHERE b.pid = ANY (pg_blocking_pids(a.pid))) AS bloqueadores,\n         (SELECT string_agg(DISTINCT c.relname, ', ')\n            FROM pg_locks l JOIN pg_class c ON c.oid = l.relation AND c.relkind = 'r'\n           WHERE l.pid = a.pid AND l.locktype = 'relation') AS tablas,\n         'PID ' || a.pid || ' esperando desde ' || to_char(a.query_start, 'HH24:MI:SS') AS marca\n  FROM pg_stat_activity a\n  WHERE a.wait_event_type = 'Lock'\n    AND now() - a.query_start > interval '30 seconds'\n) q\nWHERE NOT EXISTS (SELECT 1 FROM alertas_auditoria x\n                  WHERE x.alerta = 'D5' AND x.fecha > now() - interval '1 day'\n                    AND position(q.marca IN x.mensaje) > 0);",
+        "options": {}
+      },
+      "id": "bb33b206-e6b6-52ff-8910-4c4c934d80d2",
+      "name": "Consultar PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        220,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgMonitorN8N0001",
+          "name": "Postgres monitor_n8n"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// La anti-repetición general (misma alerta en 10 min) la hace Enviar_Alerta.\n// n8n devuelve un ítem vacío cuando la consulta no trae filas: se filtra por una columna clave.\n// D5: transacción bloqueada más de 30 s. Una alerta por sesión bloqueada (PID + hora de inicio).\nconst filas = $input.all().map(i => i.json).filter(r => r.marca);\nreturn filas.map(r => ({ json: {\n  codigo: 'D5',\n  severidad: 'ADVERTENCIA',\n  tipo: 'Transacción bloqueada (> 30 s)',\n  tabla: r.tablas || 'N/A',\n  detalle: `${r.marca}: ${r.segundos} s (umbral: 30 s). Bloqueada por: ${r.bloqueadores || 'N/A'}`,\n  query: r.query,\n  usuario: r.usuario,\n  accion: 'Revisar la transacción que bloquea: COMMIT/ROLLBACK, o terminarla con SELECT pg_terminate_backend(<PID>);'\n}}));\n"
+      },
+      "id": "17296215-1a1a-5e00-8d48-d67a25223e98",
+      "name": "¿Hay alerta? (arma JSON)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "enviarAlertaNA01",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "63bfb0b9-de5a-573f-bfe3-68d035c8a8d1",
+      "name": "Enviar_Alerta",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        660,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Cada 1 minuto": {
+      "main": [
+        [
+          {
+            "node": "Consultar PostgreSQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar PostgreSQL": {
+      "main": [
+        [
+          {
+            "node": "¿Hay alerta? (arma JSON)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay alerta? (arma JSON)": {
+      "main": [
+        [
+          {
+            "node": "Enviar_Alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Costa_Rica",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "versionId": "d4f0fe37-d66d-5d3d-bc27-2c51d72c1bb3",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

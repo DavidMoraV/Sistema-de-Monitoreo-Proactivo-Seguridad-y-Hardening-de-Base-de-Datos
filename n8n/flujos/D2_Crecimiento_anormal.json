@@ -1,0 +1,126 @@
+{
+  "id": "alertaD2Creci001",
+  "name": "D2 - Crecimiento anormal de datos",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "0032d0b1-092a-553b-9715-3ab55ecdd03d",
+      "name": "Cada 1 minuto",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- D2: conteo actual vs. la foto más reciente con al menos 30 minutos (snapshot_tablas).\n-- La misma sentencia guarda la foto de este minuto, purga las de más de 2 h y, si una tabla\n-- alertó, borra sus fotos viejas: su ventana empieza de nuevo y el evento no se repite.\nWITH actual AS (\n  SELECT 'clientes'::text AS relname, count(*) AS filas FROM clientes\n  UNION ALL SELECT 'ventas', count(*) FROM ventas\n  UNION ALL SELECT 'productos', count(*) FROM productos\n  UNION ALL SELECT 'lotes_produccion', count(*) FROM lotes_produccion\n  UNION ALL SELECT 'control_calidad', count(*) FROM control_calidad\n  UNION ALL SELECT 'materias_primas', count(*) FROM materias_primas\n  UNION ALL SELECT 'gastos', count(*) FROM gastos\n  UNION ALL SELECT 'plantas', count(*) FROM plantas\n), previa AS (\n  SELECT DISTINCT ON (relname) relname, filas, fecha\n  FROM snapshot_tablas WHERE fecha <= now() - interval '30 minutes'\n  ORDER BY relname, fecha DESC\n), alerta AS (\n  SELECT a.relname, p.filas AS antes, a.filas AS ahora, p.fecha AS desde\n  FROM actual a JOIN previa p USING (relname)\n  WHERE a.filas > p.filas * 1.2          -- > 20 %\n    AND a.filas - p.filas >= 10           -- evita alertas por 1 fila en tablas pequeñas\n), foto AS (\n  INSERT INTO snapshot_tablas (relname, filas, fecha)\n  SELECT relname, filas, now() FROM actual\n  RETURNING 1\n), purga AS (\n  DELETE FROM snapshot_tablas s\n  WHERE s.fecha < now() - interval '2 hours'\n     OR s.relname IN (SELECT relname FROM alerta)\n  RETURNING 1\n)\nSELECT relname AS tabla, antes, ahora,\n       round(100.0 * (ahora - antes) / NULLIF(antes, 0), 1)::text AS crecimiento_pct,\n       to_char(desde, 'YYYY-MM-DD HH24:MI') AS desde\nFROM alerta;",
+        "options": {}
+      },
+      "id": "88755cd3-c379-5679-aee8-b52cf4d52c58",
+      "name": "Consultar PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        220,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgMonitorN8N0001",
+          "name": "Postgres monitor_n8n"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// La anti-repetición general (misma alerta en 10 min) la hace Enviar_Alerta.\n// n8n devuelve un ítem vacío cuando la consulta no trae filas: se filtra por una columna clave.\n// D2: crecimiento > 20 % en 30 min. El SQL ya guardó la foto y reinició la ventana de la tabla alertada.\nconst filas = $input.all().map(i => i.json).filter(r => r.tabla);\nreturn filas.map(r => ({ json: {\n  codigo: 'D2',\n  severidad: 'ADVERTENCIA',\n  tipo: 'Crecimiento anormal de datos (> 20 % en 30 min)',\n  tabla: r.tabla,\n  detalle: `Filas: ${r.antes} → ${r.ahora} (+${r.crecimiento_pct} %, umbral: 20 %) desde ${r.desde}`,\n  query: `SELECT count(*) FROM ${r.tabla}; -- comparado con snapshot_tablas`,\n  usuario: 'N/A (revisar auditoria_datos o pg_stat_statements)',\n  accion: 'Confirmar si la carga es legítima. Si no, identificar al usuario en auditoria_datos y depurar los registros.'\n}}));\n"
+      },
+      "id": "6912d273-415f-5a18-b434-b202c0c46557",
+      "name": "¿Hay alerta? (arma JSON)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "enviarAlertaNA01",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "0dd48ede-bbea-5b49-a5e8-681ccf9f578d",
+      "name": "Enviar_Alerta",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        660,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Cada 1 minuto": {
+      "main": [
+        [
+          {
+            "node": "Consultar PostgreSQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar PostgreSQL": {
+      "main": [
+        [
+          {
+            "node": "¿Hay alerta? (arma JSON)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay alerta? (arma JSON)": {
+      "main": [
+        [
+          {
+            "node": "Enviar_Alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Costa_Rica",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "versionId": "de132049-8e46-56ec-ba7a-8cb18c86cc35",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

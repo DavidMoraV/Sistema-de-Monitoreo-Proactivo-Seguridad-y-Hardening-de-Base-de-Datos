@@ -1,0 +1,126 @@
+{
+  "id": "alertaD1Delet001",
+  "name": "D1 - DELETE masivo sin WHERE",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "dbd77e6b-9083-5f6b-b975-f12e649bc723",
+      "name": "Cada 1 minuto",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- DELETE masivo sin WHERE. pg_stat_statements acumula por consulta normalizada:\n-- se usa rows / calls (filas promedio por ejecución) y, en cada fila detectada,\n-- pg_stat_statements_reset(userid, dbid, queryid) borra esa entrada para que el mismo\n-- evento no se alerte otra vez en el siguiente minuto (Plan, sección 10, punto 6).\nSELECT s.queryid::text AS queryid, r.rolname AS usuario, left(s.query, 500) AS query,\n       s.calls, s.rows, s.rows / NULLIF(s.calls, 0) AS filas_por_ejecucion,\n       pg_stat_statements_reset(s.userid, s.dbid, s.queryid)::text AS reiniciado\nFROM pg_stat_statements s\nJOIN pg_roles r ON r.oid = s.userid\nWHERE s.query ~* '^\\s*delete\\M'\n  AND s.query !~* '\\mwhere\\M'\n  AND s.query !~* '\\m(pg_settings_snapshot|snapshot_tablas)\\M'   -- fotos propias de R5 y D2\n  AND s.rows / NULLIF(s.calls, 0) > 100;",
+        "options": {}
+      },
+      "id": "1a91ad89-7822-54a2-aee2-e9007adb4b9c",
+      "name": "Consultar PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        220,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgMonitorN8N0001",
+          "name": "Postgres monitor_n8n"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// La anti-repetición general (misma alerta en 10 min) la hace Enviar_Alerta.\n// n8n devuelve un ítem vacío cuando la consulta no trae filas: se filtra por una columna clave.\n// D1: DELETE masivo sin WHERE (> 100 filas por ejecución). Una alerta por consulta detectada.\nconst tablaDe = (q, verbo) => {\n  const re = verbo === 'DELETE' ? /^\\s*delete\\s+from\\s+(?:only\\s+)?([\\w.\"]+)/i : /^\\s*update\\s+(?:only\\s+)?([\\w.\"]+)/i;\n  return ((String(q).match(re) || [])[1] || 'desconocida').replace(/\"/g, '');\n};\nconst filas = $input.all().map(i => i.json).filter(r => r.queryid);\nreturn filas.map(r => ({ json: {\n  codigo: 'D1',\n  severidad: 'CRÍTICA',\n  tipo: 'DELETE masivo sin WHERE detectado',\n  tabla: tablaDe(r.query, 'DELETE'),\n  detalle: `Filas borradas: ${r.filas_por_ejecucion} por ejecución (umbral: 100). Ejecuciones: ${r.calls}. queryid ${r.queryid}`,\n  query: r.query,\n  usuario: r.usuario,\n  accion: 'Verificar si el borrado estaba autorizado. Recuperar filas desde auditoria_datos (valor_antes) o desde el último respaldo.'\n}}));\n"
+      },
+      "id": "3f21b565-70d2-5efc-ac1a-1f4c2c0ce5a2",
+      "name": "¿Hay alerta? (arma JSON)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "enviarAlertaNA01",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "2ff8f820-de50-58cd-b5c1-3d2c8e134143",
+      "name": "Enviar_Alerta",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        660,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Cada 1 minuto": {
+      "main": [
+        [
+          {
+            "node": "Consultar PostgreSQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar PostgreSQL": {
+      "main": [
+        [
+          {
+            "node": "¿Hay alerta? (arma JSON)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay alerta? (arma JSON)": {
+      "main": [
+        [
+          {
+            "node": "Enviar_Alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Costa_Rica",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "versionId": "51fa5e38-f8fa-5443-a8ed-42eca030d181",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

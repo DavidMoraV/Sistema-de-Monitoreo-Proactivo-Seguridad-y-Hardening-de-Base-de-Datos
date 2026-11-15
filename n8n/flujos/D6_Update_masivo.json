@@ -1,0 +1,126 @@
+{
+  "id": "alertaD6Updat001",
+  "name": "D6 - UPDATE masivo sin WHERE",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "3b325b48-800f-542e-8a8f-a5eed3b7c072",
+      "name": "Cada 1 minuto",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- UPDATE masivo sin WHERE. pg_stat_statements acumula por consulta normalizada:\n-- se usa rows / calls (filas promedio por ejecución) y, en cada fila detectada,\n-- pg_stat_statements_reset(userid, dbid, queryid) borra esa entrada para que el mismo\n-- evento no se alerte otra vez en el siguiente minuto (Plan, sección 10, punto 6).\nSELECT s.queryid::text AS queryid, r.rolname AS usuario, left(s.query, 500) AS query,\n       s.calls, s.rows, s.rows / NULLIF(s.calls, 0) AS filas_por_ejecucion,\n       pg_stat_statements_reset(s.userid, s.dbid, s.queryid)::text AS reiniciado\nFROM pg_stat_statements s\nJOIN pg_roles r ON r.oid = s.userid\nWHERE s.query ~* '^\\s*update\\M'\n  AND s.query !~* '\\mwhere\\M'\n  AND s.query !~* '\\m(pg_settings_snapshot|snapshot_tablas)\\M'   -- tablas auxiliares del monitoreo\n  AND s.rows / NULLIF(s.calls, 0) > 50;",
+        "options": {}
+      },
+      "id": "b404903e-4843-55d7-bac9-c710e1c55657",
+      "name": "Consultar PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        220,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgMonitorN8N0001",
+          "name": "Postgres monitor_n8n"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// La anti-repetición general (misma alerta en 10 min) la hace Enviar_Alerta.\n// n8n devuelve un ítem vacío cuando la consulta no trae filas: se filtra por una columna clave.\n// D6: UPDATE masivo sin WHERE (> 50 filas por ejecución). Una alerta por consulta detectada.\nconst tablaDe = (q, verbo) => {\n  const re = verbo === 'DELETE' ? /^\\s*delete\\s+from\\s+(?:only\\s+)?([\\w.\"]+)/i : /^\\s*update\\s+(?:only\\s+)?([\\w.\"]+)/i;\n  return ((String(q).match(re) || [])[1] || 'desconocida').replace(/\"/g, '');\n};\nconst filas = $input.all().map(i => i.json).filter(r => r.queryid);\nreturn filas.map(r => ({ json: {\n  codigo: 'D6',\n  severidad: 'CRÍTICA',\n  tipo: 'UPDATE masivo sin WHERE detectado',\n  tabla: tablaDe(r.query, 'UPDATE'),\n  detalle: `Filas modificadas: ${r.filas_por_ejecucion} por ejecución (umbral: 50). Ejecuciones: ${r.calls}. queryid ${r.queryid}`,\n  query: r.query,\n  usuario: r.usuario,\n  accion: 'Verificar intención. Consultar auditoria_datos (valor_antes / valor_nuevo) para revertir.'\n}}));\n"
+      },
+      "id": "0f0bdeb3-3f67-5b92-8f97-881e2542fb1e",
+      "name": "¿Hay alerta? (arma JSON)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "enviarAlertaNA01",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "c99fec31-6af2-5db4-8de7-cda940142760",
+      "name": "Enviar_Alerta",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        660,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Cada 1 minuto": {
+      "main": [
+        [
+          {
+            "node": "Consultar PostgreSQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar PostgreSQL": {
+      "main": [
+        [
+          {
+            "node": "¿Hay alerta? (arma JSON)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay alerta? (arma JSON)": {
+      "main": [
+        [
+          {
+            "node": "Enviar_Alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Costa_Rica",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "versionId": "1d92d5b3-f8a4-583c-998f-20e336e4a307",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

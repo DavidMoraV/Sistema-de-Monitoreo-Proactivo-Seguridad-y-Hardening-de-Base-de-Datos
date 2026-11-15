@@ -1,0 +1,126 @@
+{
+  "id": "alertaD3Backu001",
+  "name": "D3 - Sin backup en 24 horas",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "d42608ac-b304-5c65-b329-7dc441bb23da",
+      "name": "Cada 1 minuto",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- D3: último respaldo exitoso con más de 24 h (tabla backups, la llena scripts/backup.sh).\n-- \"marca\" = fecha exacta del último respaldo ok. Si ya hay una alerta D3 con esa marca, no se\n-- repite: una alerta por evento; un respaldo nuevo cierra el evento.\nSELECT * FROM (\n  SELECT to_char(b.ultimo_ok, 'YYYY-MM-DD HH24:MI') AS ultimo_ok,\n         b.ultimo_estado, to_char(b.ultimo_intento, 'YYYY-MM-DD HH24:MI') AS ultimo_intento,\n         round(extract(epoch FROM now() - b.ultimo_ok) / 3600)::int AS horas,\n         'Último respaldo exitoso: ' || COALESCE(to_char(b.ultimo_ok, 'YYYY-MM-DD HH24:MI:SS'), 'ninguno') AS marca\n  FROM (SELECT max(fecha) FILTER (WHERE estado = 'ok') AS ultimo_ok,\n               max(fecha) AS ultimo_intento,\n               (SELECT estado FROM backups ORDER BY fecha DESC, id DESC LIMIT 1) AS ultimo_estado\n        FROM backups) b\n  WHERE b.ultimo_ok IS NULL OR b.ultimo_ok < now() - interval '24 hours'\n) q\nWHERE NOT EXISTS (SELECT 1 FROM alertas_auditoria x\n                  WHERE x.alerta = 'D3' AND position(q.marca IN x.mensaje) > 0);",
+        "options": {}
+      },
+      "id": "0d38ccb3-2366-5e9a-81fb-0d1aff5d699d",
+      "name": "Consultar PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        220,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgMonitorN8N0001",
+          "name": "Postgres monitor_n8n"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// La anti-repetición general (misma alerta en 10 min) la hace Enviar_Alerta.\n// n8n devuelve un ítem vacío cuando la consulta no trae filas: se filtra por una columna clave.\n// D3: no hay respaldo exitoso en más de 24 h. El SQL solo devuelve la fila si el evento no se alertó antes.\nconst r = $input.all().map(i => i.json).find(r => r.marca);\nif (!r) return [];\nconst hace = r.horas == null ? 'nunca se ha respaldado' : `hace ${r.horas} h`;\nreturn [{ json: {\n  codigo: 'D3',\n  severidad: 'CRÍTICA',\n  tipo: 'Sin respaldo en más de 24 horas',\n  tabla: 'backups',\n  detalle: `${r.marca} (${hace}, umbral: 24 h). Último intento: ${r.ultimo_intento || 'ninguno'} (${r.ultimo_estado || 'N/A'})`,\n  query: \"SELECT MAX(fecha) FROM backups WHERE estado = 'ok';\",\n  usuario: 'N/A (proceso de respaldo)',\n  accion: 'Ejecutar ./scripts/backup.sh y revisar el cron del servidor y el espacio en disco.'\n}}];\n"
+      },
+      "id": "0de424c7-90a9-535b-a91f-acdc8a22a2b7",
+      "name": "¿Hay alerta? (arma JSON)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "enviarAlertaNA01",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "fef19e88-e060-546c-adf4-c58c2b7547f5",
+      "name": "Enviar_Alerta",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        660,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Cada 1 minuto": {
+      "main": [
+        [
+          {
+            "node": "Consultar PostgreSQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar PostgreSQL": {
+      "main": [
+        [
+          {
+            "node": "¿Hay alerta? (arma JSON)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay alerta? (arma JSON)": {
+      "main": [
+        [
+          {
+            "node": "Enviar_Alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Costa_Rica",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "versionId": "8abdc3e6-2611-50dd-894a-7dd91f5ab7b5",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

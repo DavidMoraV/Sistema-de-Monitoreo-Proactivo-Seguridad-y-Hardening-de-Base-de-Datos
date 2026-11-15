@@ -1,0 +1,144 @@
+{
+  "id": "alertaH1Ufw00001",
+  "name": "H1 - Cambio en reglas UFW",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "ffe36312-4ab2-51ed-9c3e-cc896712c9d9",
+      "name": "Cada 1 minuto",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://loki:3100/loki/api/v1/query_range",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "query",
+              "value": "{job=\"auth\"} |~ \"COMMAND=/usr/sbin/ufw\""
+            },
+            {
+              "name": "since",
+              "value": "3m"
+            },
+            {
+              "name": "limit",
+              "value": "20"
+            },
+            {
+              "name": "direction",
+              "value": "forward"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 5000
+        }
+      },
+      "id": "7b91ada4-1d7a-5cff-a7a8-e70e7b81e8e7",
+      "name": "Comandos UFW en Loki (auth.log)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        0
+      ],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// H1: cambios en las reglas del firewall UFW del host (lee auth.log vía Loki).\n// Los cambios de reglas quedan en auth.log como: sudo: <usuario> : ... ; COMMAND=/usr/sbin/ufw allow 5432/tcp\n// (no aparecen en ufw.log, que solo guarda tráfico bloqueado/permitido).\n// La anti-repetición (mismo código y detalle en 10 min) la hace Enviar_Alerta.\nconst resp = $input.first().json || {};\nconst streams = (resp.data && resp.data.result) || [];\n\n// Solo comandos que CAMBIAN reglas (ufw status / show / version no alertan)\nconst MUTANTES = /ufw\\s+(?:--force\\s+)?(allow|deny|reject|limit|delete|insert|prepend|route|enable|disable|reset|default|reload|logging)\\b/i;\n// Acciones que abren o debilitan el firewall → CRÍTICA; el resto → ADVERTENCIA\nconst ABRE = /^(allow|insert|prepend|disable|reset|route)$/i;\n\nconst vistos = new Set();\nconst alertas = [];\nfor (const s of streams) {\n  for (const [ts, linea] of (s.values || [])) {\n    const clave = ts + linea;\n    if (vistos.has(clave)) continue;\n    vistos.add(clave);\n    const m = String(linea).match(/sudo(?:\\[\\d+\\])?:\\s+(\\S+)\\s+:.*?COMMAND=(.*)$/);\n    if (!m) continue;\n    const usuario = m[1];\n    const cmd = m[2].trim();\n    if (!MUTANTES.test(cmd)) continue;\n\n    const verbo = (cmd.match(/ufw\\s+(?:--force\\s+)?(\\w+)/i) || [])[1] || '';\n    const critica = ABRE.test(verbo) || /default\\s+allow/i.test(cmd);\n    const ms = Number(String(ts).slice(0, 13));           // ns → ms\n    const hora = new Date(ms).toLocaleString('sv-SE', { timeZone: 'America/Costa_Rica' });\n    const postgres = /\\b5432\\b/.test(cmd) ? ' (puerto de PostgreSQL)' : '';\n\n    alertas.push({ json: {\n      codigo: 'H1',\n      severidad: critica ? 'CRÍTICA' : 'ADVERTENCIA',\n      tipo: 'Cambio en reglas del firewall UFW',\n      tabla: 'N/A (firewall UFW del host)',\n      detalle: `${usuario} ejecutó \"${cmd.replace(/^\\/usr\\/sbin\\/ufw/, 'sudo ufw')}\"${postgres} a las ${hora}`,\n      query: 'Loki {job=\"auth\"} |~ \"COMMAND=/usr/sbin/ufw\"',\n      usuario,\n      accion: 'Si no fue autorizado, revertir la regla (sudo ufw delete ...) y revisar quién inició sesión (last, /var/log/auth.log).'\n    }});\n  }\n}\nreturn alertas;\n"
+      },
+      "id": "d550a813-d452-5025-bbc1-3c06dc2a97de",
+      "name": "¿Hay alerta? (arma JSON)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "enviarAlertaNA01",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "b66c4d61-0c03-5aea-874d-86014ac31d27",
+      "name": "Enviar_Alerta",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        660,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Cada 1 minuto": {
+      "main": [
+        [
+          {
+            "node": "Comandos UFW en Loki (auth.log)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Comandos UFW en Loki (auth.log)": {
+      "main": [
+        [
+          {
+            "node": "¿Hay alerta? (arma JSON)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay alerta? (arma JSON)": {
+      "main": [
+        [
+          {
+            "node": "Enviar_Alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "versionId": "5b35dd36-6d65-5f33-947c-8cf701265b18",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Costa_Rica",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

@@ -1,0 +1,25 @@
+// Grafana Alloy (agente nativo de Loki; reemplaza a Filebeat, que no tiene salida a Loki).
+// Lee los logs del host montados en /var/log/host y los envía a Loki con la etiqueta job.
+//   job="auth" → /var/log/auth.log (SSH fallido, comandos sudo como "ufw allow ...")  → R4, H1, A1, A3
+//   job="ufw"  → /var/log/ufw.log  (tráfico bloqueado/permitido por UFW)
+
+local.file_match "host_logs" {
+  path_targets = [
+    {"__path__" = "/var/log/host/auth.log", "job" = "auth"},
+    {"__path__" = "/var/log/host/ufw.log",  "job" = "ufw"},
+  ]
+}
+
+loki.source.file "host_logs" {
+  targets       = local.file_match.host_logs.targets
+  forward_to    = [loki.write.local.receiver]
+  // Solo líneas nuevas: sin esto, al arrancar se leería todo el historial con la hora actual
+  // y comandos viejos (p. ej. el "ufw allow" de la instalación) dispararían H1 y R4.
+  tail_from_end = true
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

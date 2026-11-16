@@ -73,17 +73,28 @@ Las 7 consultas de los flujos se probaron el 14 de noviembre de 2026 contra una 
 | D6 | `UPDATE prueba_update` (200) y `UPDATE lotes_produccion SET estado = estado` (500) | 2 filas | 0 filas. `UPDATE backups` (1 fila) no alerta |
 | D7 | `SELECT * FROM clientes` y un `JOIN` ventas–clientes como `agente_ia` | 2 filas (1,508 y 1,500) | 0 filas. `LIMIT 50` y `vw_ventas_resumen` no alertan |
 
-**Pendiente en el servidor de la demo:** importar los flujos, ver las 7 alertas en Telegram y tomar las capturas (sección 7).
+**Prueba completa con N8N y Telegram (15 de noviembre de 2026):** stack completo del repo con N8N 2.45.5 y los 19 flujos importados por `init_n8n_m3.sh`. Las 7 alertas llegaron al grupo "NutriAnimales Alertas" entre las 19:18 y las 19:23, **una sola vez cada una**: `alertas_auditoria` registró un solo mensaje por evento (7 en la secuencia; una repetición posterior de D5, con otro bloqueo, generó su propia alerta, como corresponde).
 
-## 7. Capturas pendientes (en el servidor de la demo)
+## 7. Capturas
 
-`docs/capturas/D1_alerta.png` … `D7_alerta.png`, cada una con la hora del mensaje en Telegram.
+| Código | Archivo | Hora en Telegram |
+|---|---|---|
+| D1 | [`D1_alerta.png`](capturas/D1_alerta.png) | 19:18 |
+| D6 | [`D6_alerta.png`](capturas/D6_alerta.png) | 19:19 |
+| D7 | [`D7_alerta.png`](capturas/D7_alerta.png) | 19:19 |
+| D4 | [`D4_alerta.png`](capturas/D4_alerta.png) | 19:20 |
+| D3 | [`D3_alerta.png`](capturas/D3_alerta.png) | 19:21 |
+| D2 | [`D2_alerta.png`](capturas/D2_alerta.png) | 19:22 |
+| D5 | [`D5_alerta.png`](capturas/D5_alerta.png) | 19:23 |
+
+Para repetirlas:
 
 ```bash
 ./scripts/demo_m4.sh D1      # esperar ≤ 1 min → captura de Telegram → ./scripts/demo_m4.sh D1 limpiar
-./scripts/demo_m4.sh D2      # …
 ./scripts/demo_m4.sh estado  # confirma que cada alerta quedó en alertas_auditoria
 ```
+
+Si se repite la misma alerta antes de 10 minutos, `Enviar_Alerta` la descarta por idéntica (D1, D6 y D7 repiten el mismo `queryid`).
 
 ## 8. Para M5
 

@@ -56,7 +56,7 @@ El sistema responde con **cuatro capas**:
 | **M2** · DBA | Jean Rabbat | Ajuste de parámetros vía `ALTER SYSTEM` (H5 demostrable), corrección de R5, respaldos, pgbench, pgBadger, evidencias de BD |
 | **M3** · N8N + alertas R y H | Luis Rojas | N8N, bot de Telegram con Groq, subflujo `Enviar_Alerta`, alertas R1–R5 y H3–H5 |
 | **M4** · Alertas de datos | Jorge Chaves | Alertas D1–D7 con detección de un solo evento, escenarios y script de demo |
-| **M5** · Seguridad ofensiva + host | M5 | Pipeline Alloy + Loki, alertas H1 y H2, firewall, matriz de riesgos, ataques A1–A5, consolidación del informe |
+| **M5** · Seguridad ofensiva + host | Cristian Vargas | Pipeline Alloy + Loki, alertas H1 y H2, firewall, matriz de riesgos, ataques A1–A5, consolidación del informe |
 
 ---
 

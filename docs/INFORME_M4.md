@@ -76,7 +76,7 @@ Las consultas de los siete flujos se probaron el 14 de noviembre de 2026 contra 
 | D6 | `UPDATE prueba_update SET estado = 'cancelado';` (200 filas) | Alerta: 200 filas | Sin alerta. Un `UPDATE` de 1 fila en `backups` no alertó |
 | D7 | `SELECT * FROM clientes;` como `agente_ia` | Alerta: 1,508 filas, usuario `agente_ia` | Sin alerta. `SELECT … LIMIT 50` y `vw_ventas_resumen` no alertaron |
 
-_Capturas de Telegram (se toman en el servidor de la demo con `./scripts/demo_m4.sh D<n>`):_
+Después se repitió la prueba con el sistema completo (N8N 2.45.5 y Telegram) el 15 de noviembre de 2026. Las siete alertas llegaron al grupo de Telegram entre las 19:18 y las 19:23, cada una en menos de un minuto y **una sola vez**: `alertas_auditoria` registró un solo mensaje por evento, sin repeticiones en los ciclos siguientes.
 
 | | |
 | --- | --- |

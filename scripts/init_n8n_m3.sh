@@ -51,6 +51,9 @@ IDS="$IDS alertaD1Delet001 alertaD2Creci001 alertaD3Backu001 alertaD4Dupli001 al
 # el paso 3 importa toda la carpeta y fallaría si H1/H2 estuvieran activos. init_n8n_m5.sh sigue sirviendo
 # para cargar solo esos dos.
 IDS="$IDS alertaH1Ufw00001 alertaH2Hash0001"
+# Proyecto II: C1/C2 (webhook del hash de sshd_config) y C3 (SLA vencido). Necesitan las variables
+# de GLPI en el .env y sql/08_itsm_glpi.sql aplicado; si GLPI todavía no está, se importan igual.
+IDS="$IDS itsmHashSshd0001 itsmC3SlaVenc001"
 
 echo "3) Importando flujos..."
 # Si ya estaban activos (segunda vez que se corre el script), hay que desactivarlos antes:

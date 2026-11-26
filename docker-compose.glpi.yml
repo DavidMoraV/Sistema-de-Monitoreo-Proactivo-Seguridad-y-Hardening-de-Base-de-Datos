@@ -8,9 +8,13 @@
 #    docker compose up -d
 #
 #  Qué agrega:
-#    glpi      GLPI 10.0 (imagen oficial). Interfaz web en http://<IP_DEL_SERVIDOR>:8090
+#    glpi      GLPI 10.0 (imagen oficial). SIN puertos publicados.
 #    glpi_db   MariaDB 10.11 solo para GLPI, sin puertos publicados (misma idea que HD04)
-#    n8n       se le agregan las variables de GLPI para que los flujos usen la API REST
+#    nginx     se le agrega el sitio de GLPI: https://<IP_DEL_SERVIDOR>:8444 (TLS, HD08 y HD09)
+#    n8n       se le agregan las variables de GLPI y del webhook del hash
+#
+#  Igual que en el Proyecto I, Nginx es el único servicio que publica puertos:
+#    8080 → redirección · 8443 → N8N · 8444 → GLPI
 #
 #  Se usa GLPI 10.0 porque su API REST clásica (apirest.php + App-Token + user_token)
 #  es la más sencilla de consumir desde N8N.
@@ -54,23 +58,31 @@ services:
       TZ: ${GENERIC_TIMEZONE}
     volumes:
       - ./volumes/glpi:/var/glpi
-    ports:
-      - "8090:80"                    # interfaz web de GLPI
+    # Sin "ports:": la interfaz web sale solo por Nginx (8444, HTTPS).
+    # Docker publica puertos por encima de UFW, así que un "ports:" aquí quedaría abierto
+    # a toda la red y sin cifrar, aunque UFW no lo permita.
     networks:
       - nutrianimales-net
     depends_on:
       glpi_db:
         condition: service_healthy
 
+  # ---------------------------------------------------------------- Nginx (se amplía el servicio del Proyecto I)
+  nginx:
+    ports:
+      - "8444:8444"                  # HTTPS → GLPI (se suma a 8080 y 8443)
+    volumes:
+      - ./nginx/glpi.conf:/etc/nginx/conf.d/glpi.conf:ro
+
   # ---------------------------------------------------------------- N8N (se amplía el servicio del Proyecto I)
   n8n:
     environment:
-      # N8N llama a GLPI por la red interna, sin pasar por el puerto publicado
+      # N8N llama a GLPI por la red interna, sin pasar por Nginx
       GLPI_API_URL: http://glpi/apirest.php
       GLPI_APP_TOKEN: ${GLPI_APP_TOKEN}
       GLPI_USER_TOKEN: ${GLPI_USER_TOKEN}
-      GLPI_CATEGORIA_ID: ${GLPI_CATEGORIA_ID}
-      SSHD_BASELINE_HASH: ${SSHD_BASELINE_HASH}
+      GLPI_CATEGORIA_ID: ${GLPI_CATEGORIA_ID:-0}
+      GLPI_SLA_CRITICO_ID: ${GLPI_SLA_CRITICO_ID:-0}
+      # Secreto compartido con scripts/hash_sshd.sh: el webhook descarta lo que no lo traiga
+      HASH_WEBHOOK_TOKEN: ${HASH_WEBHOOK_TOKEN}
       C3_UMBRAL_MINUTOS: ${C3_UMBRAL_MINUTOS:-60}
-    depends_on:
-      - glpi

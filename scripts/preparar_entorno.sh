@@ -34,6 +34,8 @@ else
         -e "s|^AUDITOR_DB_PASSWORD=.*|AUDITOR_DB_PASSWORD=$(generar_clave)|" \
         -e "s|^N8N_PASSWORD=.*|N8N_PASSWORD=$(generar_clave)Aa1|" \
         -e "s|^N8N_ENCRYPTION_KEY=.*|N8N_ENCRYPTION_KEY=$(openssl rand -hex 32)|" \
+        -e "s|^GLPI_DB_PASSWORD=.*|GLPI_DB_PASSWORD=$(generar_clave)|" \
+        -e "s|^HASH_WEBHOOK_TOKEN=.*|HASH_WEBHOOK_TOKEN=$(openssl rand -hex 24)|" \
         .env.example > .env
     echo "   .env creado con contraseñas aleatorias (IP del servidor: ${IP_SERVIDOR})."
     echo "   Pendiente: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID y GROQ_API_KEY (los completa M3)."
@@ -45,6 +47,23 @@ for VARIABLE in AGENTE_IA_PASSWORD MONITOR_N8N_PASSWORD GERENTE_DB_PASSWORD TI_D
         echo "   Agregada al .env: ${VARIABLE}"
     fi
 done
+# Proyecto II: agregar al .env existente las variables de GLPI y del script de hash
+# (las contraseñas y el secreto del webhook se generan; los tokens de GLPI se completan después)
+agregar() { grep -q "^$1=" .env || { echo "$1=$2" >> .env; echo "   Agregada al .env: $1"; }; }
+agregar COMPOSE_FILE        docker-compose.yml:docker-compose.logs.yml:docker-compose.glpi.yml
+agregar GLPI_DB_NAME        glpi
+agregar GLPI_DB_USER        glpi
+agregar GLPI_DB_PASSWORD    "$(generar_clave)"
+agregar GLPI_APP_TOKEN      __cambiar__
+agregar GLPI_USER_TOKEN     __cambiar__
+agregar GLPI_CATEGORIA_ID   0
+agregar GLPI_SLA_CRITICO_ID 0
+agregar N8N_WEBHOOK_URL     https://nutrianimales.local:8443/webhook/hash-sshd
+agregar HASH_WEBHOOK_TOKEN  "$(openssl rand -hex 24)"
+agregar HOST_NAME           nutrianimales-srv01
+agregar SSHD_CONFIG_PATH    /etc/ssh/sshd_config
+agregar N8N_TLS_INSECURE    false
+agregar C3_UMBRAL_MINUTOS   60
 chmod 600 .env
 
 echo "== 2/4  Volúmenes =="

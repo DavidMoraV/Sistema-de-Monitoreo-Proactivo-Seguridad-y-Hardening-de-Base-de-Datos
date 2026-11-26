@@ -173,3 +173,36 @@ docker compose up -d
 | La API responde `ERROR_APP_TOKEN_PARAMETERS_MISSING` o similar | Falta el app_token o la API está desactivada | Revisar el paso 3.5 |
 | El script da `[ERROR] Falta N8N_WEBHOOK_URL` | Variable no copiada al `.env` | Revisar el paso 3.2 |
 | El script no conecta con N8N | Flujo inactivo o certificado rechazado | Activar el flujo en N8N o usar `N8N_TLS_INSECURE=true` |
+
+---
+
+## 7. Flujos de N8N (`n8n_workflow.json`)
+
+El archivo `n8n_workflow.json` trae los dos flujos del proyecto, probados de punta a punta en un laboratorio:
+
+| Flujo | Nodos | Qué hace |
+|---|---|---|
+| Detección de cambios en sshd_config (C1 y C2) | Webhook → Comparación de hash → HTTP a GLPI → Telegram | Recibe el hash del script, lo compara con la línea base, consulta si hay un Change aprobado, crea el incidente con SLA de 1 h, envía C1 y C2 y, cuando el hash vuelve a la línea base, cierra el incidente y avisa por Telegram. |
+| SLA vencido (C3) | Cada minuto → Buscar SLA vencidos en GLPI → Telegram | Revisa los incidentes críticos abiertos y envía la alerta C3 cuando superan el umbral (60 minutos por defecto). |
+
+### 7.1 Variables que necesita en el `.env`
+
+Además de `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `GLPI_APP_TOKEN` y `GLPI_USER_TOKEN`:
+
+| Variable | Valor |
+|---|---|
+| `GLPI_CATEGORIA_ID` | ID de la categoría "Seguridad > Cambio de configuración" en GLPI (aparece en la URL al abrirla) |
+| `SSHD_BASELINE_HASH` | Hash de línea base: el que muestra `sudo ./scripts/hash_sshd.sh --dry-run` con la configuración aprobada |
+| `C3_UMBRAL_MINUTOS` | 60 en operación normal; se puede bajar a 2 para demostrar la alerta C3 |
+
+Después de editar el `.env`: `docker compose up -d n8n`.
+
+### 7.2 Importar los flujos
+
+1. En N8N: **Workflows → Import from file** y elegir `n8n_workflow.json` (trae los dos flujos).
+2. Abrir cada flujo y **activarlo / publicarlo**.
+3. Probar con `sudo ./scripts/hash_sshd.sh`: si el hash coincide con la línea base no pasa nada; si se cambia `sshd_config`, llegan C1 y C2 a Telegram y aparece el incidente en GLPI.
+
+Notas:
+- Las alertas usan el nodo HTTP Request hacia la API de Telegram con las variables del `.env`, por lo que no hace falta crear credenciales en N8N. Si el equipo prefiere usar el subflujo `Enviar_Alerta` del Proyecto I, se puede reemplazar el nodo **Telegram** por un nodo *Execute Workflow* que lo llame.
+- Cuando se aplique un cambio aprobado que modifique `sshd_config` a propósito, hay que actualizar `SSHD_BASELINE_HASH` con el hash nuevo.

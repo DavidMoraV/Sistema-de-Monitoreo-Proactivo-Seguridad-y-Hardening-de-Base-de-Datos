@@ -69,5 +69,8 @@ services:
       GLPI_API_URL: http://glpi/apirest.php
       GLPI_APP_TOKEN: ${GLPI_APP_TOKEN}
       GLPI_USER_TOKEN: ${GLPI_USER_TOKEN}
+      GLPI_CATEGORIA_ID: ${GLPI_CATEGORIA_ID}
+      SSHD_BASELINE_HASH: ${SSHD_BASELINE_HASH}
+      C3_UMBRAL_MINUTOS: ${C3_UMBRAL_MINUTOS:-60}
     depends_on:
       - glpi

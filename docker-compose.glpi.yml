@@ -1,0 +1,73 @@
+# =====================================================================
+#  docker-compose.glpi.yml — Proyecto II: GLPI (ITSM + CMDB) sobre el stack del Proyecto I
+#  BCD 9220 · Lead University · III Cuatrimestre 2026
+#
+#  Uso (igual que el pipeline de logs):
+#    docker compose -f docker-compose.yml -f docker-compose.logs.yml -f docker-compose.glpi.yml up -d
+#  o, con COMPOSE_FILE en el .env, simplemente:
+#    docker compose up -d
+#
+#  Qué agrega:
+#    glpi      GLPI 10.0 (imagen oficial). Interfaz web en http://<IP_DEL_SERVIDOR>:8090
+#    glpi_db   MariaDB 10.11 solo para GLPI, sin puertos publicados (misma idea que HD04)
+#    n8n       se le agregan las variables de GLPI para que los flujos usen la API REST
+#
+#  Se usa GLPI 10.0 porque su API REST clásica (apirest.php + App-Token + user_token)
+#  es la más sencilla de consumir desde N8N.
+# =====================================================================
+
+services:
+
+  # ---------------------------------------------------------------- Base de datos de GLPI
+  glpi_db:
+    image: mariadb:10.11
+    container_name: nutri_glpi_db
+    restart: unless-stopped
+    environment:
+      MARIADB_RANDOM_ROOT_PASSWORD: "yes"
+      MARIADB_DATABASE: ${GLPI_DB_NAME}
+      MARIADB_USER: ${GLPI_DB_USER}
+      MARIADB_PASSWORD: ${GLPI_DB_PASSWORD}
+      TZ: ${GENERIC_TIMEZONE}
+    volumes:
+      - ./volumes/glpi_db:/var/lib/mysql
+    networks:
+      - nutrianimales-net
+    # Sin "ports:": solo GLPI la alcanza por la red interna.
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ---------------------------------------------------------------- GLPI
+  glpi:
+    image: glpi/glpi:10.0.28         # versión fija: el ZIP final siempre levanta igual
+    container_name: nutri_glpi
+    restart: unless-stopped
+    environment:
+      GLPI_DB_HOST: glpi_db
+      GLPI_DB_PORT: 3306
+      GLPI_DB_NAME: ${GLPI_DB_NAME}
+      GLPI_DB_USER: ${GLPI_DB_USER}
+      GLPI_DB_PASSWORD: ${GLPI_DB_PASSWORD}
+      TZ: ${GENERIC_TIMEZONE}
+    volumes:
+      - ./volumes/glpi:/var/glpi
+    ports:
+      - "8090:80"                    # interfaz web de GLPI
+    networks:
+      - nutrianimales-net
+    depends_on:
+      glpi_db:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------- N8N (se amplía el servicio del Proyecto I)
+  n8n:
+    environment:
+      # N8N llama a GLPI por la red interna, sin pasar por el puerto publicado
+      GLPI_API_URL: http://glpi/apirest.php
+      GLPI_APP_TOKEN: ${GLPI_APP_TOKEN}
+      GLPI_USER_TOKEN: ${GLPI_USER_TOKEN}
+    depends_on:
+      - glpi

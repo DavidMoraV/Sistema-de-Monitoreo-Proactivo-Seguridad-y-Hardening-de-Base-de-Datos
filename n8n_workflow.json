@@ -1,6 +1,7 @@
 [
   {
-    "name": "Proyecto II · Detección de cambios en sshd_config (C1 y C2)",
+    "id": "itsmHashSshd0001",
+    "name": "C1 y C2 - Cambio en sshd_config (GLPI)",
     "nodes": [
       {
         "parameters": {
@@ -8,99 +9,248 @@
           "path": "hash-sshd",
           "options": {}
         },
-        "id": "507a62ed-7570-4eae-9909-27a5f36afdeb",
-        "name": "Webhook",
+        "id": "3e2d3866-4995-5634-b0f2-e3bb473b3a01",
+        "name": "Webhook hash-sshd",
         "type": "n8n-nodes-base.webhook",
         "typeVersion": 2,
         "position": [
           0,
           0
         ],
-        "webhookId": "05d9248b-dcc4-4a76-b139-51e6bd1a5c25"
+        "webhookId": "fe4a34b4-41a1-5ca3-aa53-f70094c813f7"
       },
       {
         "parameters": {
-          "jsCode": "// Comparación de hash: compara el hash recibido con la línea base registrada\nconst entrada = $input.first().json;\nconst body = entrada.body || entrada;\nconst hash = String(body.hash_sshd || '').trim().toLowerCase();\nconst base = String($env.SSHD_BASELINE_HASH || '').trim().toLowerCase();\nif (!/^[a-f0-9]{64}$/.test(hash)) throw new Error('El campo hash_sshd no es un SHA-256 válido');\nif (!/^[a-f0-9]{64}$/.test(base)) throw new Error('Falta SSHD_BASELINE_HASH en el .env');\nreturn [{ json: {\n  hash, base,\n  cambio: hash !== base,\n  host: body.host || 'nutrianimales-srv01',\n  timestamp: body.timestamp || new Date().toISOString()\n} }];\n"
+          "jsCode": "// 1. DETECTA · Valida el origen y el formato antes de tocar la BD o GLPI.\n// El webhook no tiene usuario: sin el secreto compartido cualquiera en la red podría enviar\n// un hash falso (o el de la línea base, que cerraría el incidente). Lo que no trae el token se descarta.\nconst it = $input.first().json;\nconst h = it.headers || {};\nconst body = it.body || {};\nconst esperado = String($env.HASH_WEBHOOK_TOKEN || '');\nif (!esperado || esperado === '__cambiar__' || String(h['x-hash-token'] || '') !== esperado) return [];\n\nconst hash = String(body.hash_sshd || '').trim().toLowerCase();\nconst host = String(body.host || '').trim();\nif (!/^[a-f0-9]{64}$/.test(hash) || !/^[A-Za-z0-9._-]{1,64}$/.test(host)) return [];\nconst timestamp = String(body.timestamp || '').replace(/[^0-9TZ:.\\-]/g, '').slice(0, 30) || new Date().toISOString();\n\n// host y hash ya están validados con listas blancas: se pueden interpolar en el SQL sin riesgo de inyección\nconst sql_estado =\n  `SELECT h.host, b.hash AS base, i.ticket_id AS abierto ` +\n  `FROM (VALUES ('${host}')) AS h(host) ` +\n  `LEFT JOIN sshd_baseline b ON b.host = h.host ` +\n  `LEFT JOIN LATERAL (SELECT ticket_id FROM glpi_incidentes WHERE host = h.host AND cerrado IS NULL ` +\n  `ORDER BY creado DESC LIMIT 1) i ON true;`;\nreturn [{ json: { hash, host, timestamp, sql_estado } }];\n"
         },
-        "id": "bd0b288a-3767-4d76-8942-0a60f5df300e",
-        "name": "Comparación de hash",
+        "id": "878d9766-fa18-5c28-85b0-bf4bee15b695",
+        "name": "Validar origen y hash",
         "type": "n8n-nodes-base.code",
         "typeVersion": 2,
         "position": [
-          240,
+          220,
           0
         ]
       },
       {
         "parameters": {
-          "jsCode": "// HTTP a GLPI: consulta si hay un Change aprobado y crea o cierra el incidente\nconst d = $input.first().json;\nconst API = $env.GLPI_API_URL;\nconst base = { 'Content-Type': 'application/json' };\nif ($env.GLPI_APP_TOKEN && $env.GLPI_APP_TOKEN !== '__cambiar__') base['App-Token'] = $env.GLPI_APP_TOKEN;\nconst req = (method, path, body, extra = {}) =>\n  this.helpers.httpRequest({ method, url: API + path, headers: { ...base, ...extra }, body, json: true });\n\nconst corto = h => h ? h.slice(0, 8) + '…' + h.slice(-4) : '—';\nconst fecha = iso => new Date(iso).toLocaleString('es-CR', { timeZone: 'America/Costa_Rica', hour12: false });\nfunction msg(tipo, titulo, sev, norma, valor, accion, ticket) {\n  return [\n    `🚨 ALERTA ${tipo} · ${titulo}`,\n    'NutriAnimales S.A. | Proyecto II · BCD 9220',\n    `Tipo: ${titulo}`,\n    `Fecha: ${fecha(d.timestamp)}`,\n    `Host: ${d.host}`,\n    `Valor detectado: ${valor}`,\n    `Severidad: ${sev}`,\n    `Norma: ${norma}`,\n    `Acción sugerida: ${accion}`,\n    `Ticket GLPI: ${ticket ? '#' + ticket : 'sin ticket'}`\n  ].join('\\n');\n}\n\nconst ses = await req('GET', '/initSession', undefined, { Authorization: 'user_token ' + $env.GLPI_USER_TOKEN });\nbase['Session-Token'] = ses.session_token;\nconst TITULO = 'Cambio no autorizado en sshd_config · ' + d.host;\nconst valorHash = `hash ${corto(d.hash)} (línea base ${corto(d.base)})`;\nconst out = [];\ntry {\n  // ID de la categoría \"Seguridad > Cambio de configuración\" (variable GLPI_CATEGORIA_ID del .env)\n  let catId = Number($env.GLPI_CATEGORIA_ID || 0);\n  if (!catId) {\n    const cats = await req('GET', '/ITILCategory?range=0-500').catch(() => []);\n    const cat = (Array.isArray(cats) ? cats : []).find(c => c.name === 'Cambio de configuración');\n    catId = cat ? cat.id : 0;\n  }\n  const comps = await req('GET', '/Computer?range=0-999');\n  const srv = comps.find(c => c.name === d.host);\n  const tickets = await req('GET', '/Ticket?range=0-200&sort=id&order=DESC');\n  const abierto = tickets.find(t => t.name === TITULO && Number(t.status) < 5);\n\n  if (d.cambio) {\n    // ¿Existe un Change aprobado y todavía no aplicado para este servidor?\n    let aprobado = null;\n    if (srv) {\n      const links = await req('GET', `/Computer/${srv.id}/Change_Item`).catch(() => []);\n      for (const l of (Array.isArray(links) ? links : [])) {\n        const ch = await req('GET', `/Change/${l.changes_id}`);\n        if (Number(ch.global_validation) === 3 && ![5, 6, 13, 14].includes(Number(ch.status))) { aprobado = ch; break; }\n      }\n    }\n    if (aprobado) {\n      out.push({ json: { alerta: 'C1', ticket: null, texto: msg('C1', 'Cambio en configuración crítica', 'MEDIA', 'ISO/IEC 27001 A.8.9',\n        valorHash, `Cambio cubierto por el Change #${aprobado.id} aprobado. Al terminar, registrar el nuevo hash como línea base.`, null) } });\n    } else if (!abierto) {\n      const content = [\n        'Alerta C1/C2 generada automáticamente por N8N.',\n        `Host: ${d.host}`,\n        `Fecha de detección: ${d.timestamp}`,\n        `Hash detectado: ${d.hash}`,\n        `Hash de línea base: ${d.base}`,\n        'Change aprobado en GLPI: No',\n        'Severidad: Crítica · SLA de resolución: 1 hora',\n        'Acción sugerida: verificar el cambio, registrar y aprobar un Change o revertir la configuración a la línea base.',\n        'Controles: ISO/IEC 27001 A.8.9, A.8.32 y A.5.26.'\n      ].join('<br>');\n      const input = { name: TITULO, content, type: 1, urgency: 5, impact: 5, itilcategories_id: catId };\n      if (srv) input.items_id = { Computer: [srv.id] };\n      const t = await req('POST', '/Ticket', { input });\n      out.push({ json: { alerta: 'C1', ticket: t.id, texto: msg('C1', 'Cambio en configuración crítica', 'CRÍTICA', 'ISO/IEC 27001 A.8.9',\n        valorHash, 'Verificar quién modificó sshd_config y comparar el archivo contra la línea base.', t.id) } });\n      out.push({ json: { alerta: 'C2', ticket: t.id, texto: msg('C2', 'Cambio sin ticket aprobado', 'CRÍTICA', 'ISO/IEC 27001 A.8.32 · ITIL habilitación de cambios',\n        'No existe un Change aprobado en GLPI para ' + d.host, 'Registrar y aprobar un Change en GLPI o revertir sshd_config a la línea base. SLA de resolución: 1 hora.', t.id) } });\n    }\n    // Si ya hay un incidente abierto por este cambio, no se repiten las alertas.\n  } else if (abierto) {\n    await req('POST', '/ITILFollowup', { input: { itemtype: 'Ticket', items_id: abierto.id,\n      content: `Cierre automático por N8N: el hash de sshd_config volvió a la línea base (${corto(d.hash)}).` } });\n    await req('PUT', `/Ticket/${abierto.id}`, { input: { status: 6 } });\n    out.push({ json: { alerta: 'CIERRE', ticket: abierto.id, texto: [\n      `✅ Incidente #${abierto.id} cerrado automáticamente`,\n      'NutriAnimales S.A. | Proyecto II · BCD 9220',\n      `Fecha: ${fecha(d.timestamp)}`,\n      `Host: ${d.host}`,\n      `Valor detectado: hash ${corto(d.hash)} = línea base`,\n      'Acción: registrar el Problem con la causa raíz en GLPI.'\n    ].join('\\n') } });\n  }\n} finally {\n  await req('GET', '/killSession').catch(() => {});\n}\nreturn out;\n"
+          "operation": "executeQuery",
+          "query": "={{ $json.sql_estado }}",
+          "options": {}
         },
-        "id": "b905ff77-0b7d-4718-9699-f42bddd55e1c",
-        "name": "HTTP a GLPI",
+        "id": "c7cab247-a9c8-54e9-9bda-7181c94405b3",
+        "name": "Línea base e incidente abierto",
+        "type": "n8n-nodes-base.postgres",
+        "typeVersion": 2.5,
+        "position": [
+          440,
+          0
+        ],
+        "credentials": {
+          "postgres": {
+            "id": "pgMonitorN8N0001",
+            "name": "Postgres monitor_n8n"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "jsCode": "// 2. DECIDE y 3. GESTIONA · Compara con la línea base, consulta GLPI y crea o cierra el incidente.\n// Salida: { alertas: [...para Enviar_Alerta], sql: [...estado en PostgreSQL], aviso: 'texto informativo' }\nconst d = $('Validar origen y hash').first().json;\nconst e = $input.first().json;\nconst base = e.base ? String(e.base).trim() : null;\nconst abierto = e.abierto ? Number(e.abierto) : null;\nconst out = { alertas: [], sql: [], aviso: '' };\nconst corto = x => x ? x.slice(0, 8) + '…' + x.slice(-4) : '—';\nconst ahora = $now.setZone('America/Costa_Rica').toFormat('yyyy-MM-dd HH:mm:ss');\nconst alerta = (codigo, severidad, tipo, valor, accion, ticket) => ({\n  codigo, severidad, tipo,\n  tabla: `sshd_config · ${d.host}`,\n  detalle: `Valor detectado: ${valor}\\nTicket GLPI: ${ticket ? '#' + ticket : 'sin ticket'}`,\n  query: 'sha256sum /etc/ssh/sshd_config',\n  usuario: 'scripts/hash_sshd.sh',\n  accion\n});\n\n// a) Primer envío de este servidor: se registra la línea base (paso 1 del estudio de caso)\nif (!base) {\n  out.sql.push(`INSERT INTO sshd_baseline (host, hash, motivo) VALUES ('${d.host}', '${d.hash}', ` +\n               `'Línea base inicial (primer envío del script)') ON CONFLICT (host) DO NOTHING;`);\n  out.aviso = `ℹ️ Línea base registrada · NutriAnimales S.A. | Proyecto II\\nFecha: ${ahora}\\nHost: ${d.host}\\n` +\n              `Hash SHA-256 de sshd_config: ${d.hash}\\nControl: ISO/IEC 27001 A.8.9`;\n  return [{ json: out }];\n}\n// b) Sin novedad: hash igual a la línea base y ningún incidente abierto\nif (d.hash === base && !abierto) return [{ json: out }];\n// c) El cambio ya tiene incidente abierto: no se repiten C1/C2 en cada ejecución del cron\nif (d.hash !== base && abierto) return [{ json: out }];\n\n// ---- API REST de GLPI (red interna; tokens en el .env) ----\nconst API = $env.GLPI_API_URL;\nconst cab = { 'Content-Type': 'application/json', 'App-Token': $env.GLPI_APP_TOKEN };\nconst req = (method, path, body, extra = {}) =>\n  this.helpers.httpRequest({ method, url: API + path, headers: { ...cab, ...extra }, body, json: true });\nconst abrirSesion = async () => {\n  const s = await req('GET', '/initSession', undefined, { Authorization: 'user_token ' + $env.GLPI_USER_TOKEN });\n  cab['Session-Token'] = s.session_token;\n};\nconst cerrarSesion = () => req('GET', '/killSession').catch(() => {});\n\nawait abrirSesion();\ntry {\n  if (d.hash === base) {\n    // d) El hash volvió a la línea base → cierre automático del incidente (paso 5 del estudio de caso)\n    const t = await req('GET', `/Ticket/${abierto}`).catch(() => null);\n    if (t && Number(t.status) < 5) {\n      await req('POST', '/ITILFollowup', { input: { itemtype: 'Ticket', items_id: abierto,\n        content: `Cierre automático por N8N (${ahora}): el hash de sshd_config volvió a la línea base (${corto(d.hash)}).` } });\n      await req('PUT', `/Ticket/${abierto}`, { input: { status: 6 } });   // 6 = Cerrado\n    }\n    out.sql.push(`UPDATE glpi_incidentes SET cerrado = NOW(), cierre = 'Automático: el hash volvió a la línea base' ` +\n                 `WHERE ticket_id = ${abierto} AND cerrado IS NULL;`);\n    out.aviso = `✅ Incidente #${abierto} cerrado automáticamente · NutriAnimales S.A. | Proyecto II\\nFecha: ${ahora}\\n` +\n                `Host: ${d.host}\\nValor detectado: hash ${corto(d.hash)} = línea base\\n` +\n                `Acción: registrar el Problem con la causa raíz en GLPI y vincularlo al incidente #${abierto}.`;\n    return [{ json: out }];\n  }\n\n  // e) Hash distinto y sin incidente abierto: ¿hay un Change aprobado y no aplicado para el servidor?\n  const equipos = await req('GET', '/Computer?range=0-999');\n  const srv = (Array.isArray(equipos) ? equipos : []).find(c => c.name === d.host);\n  let aprobado = null;\n  if (srv) {\n    const links = await req('GET', `/Computer/${srv.id}/Change_Item`).catch(() => []);\n    for (const l of (Array.isArray(links) ? links : [])) {\n      const ch = await req('GET', `/Change/${l.changes_id}`).catch(() => null);\n      // global_validation 3 = aprobado · se excluyen aplicado (5), cerrado (6), cancelado (13) y rechazado (14)\n      if (ch && Number(ch.global_validation) === 3 && ![5, 6, 13, 14].includes(Number(ch.status))) { aprobado = ch; break; }\n    }\n  }\n  const valor = `hash ${corto(d.hash)} ≠ línea base ${corto(base)}`;\n\n  if (aprobado) {\n    // Cambio autorizado (A.8.32): solo C1 informativa y el hash nuevo pasa a ser la línea base\n    await req('POST', '/ITILFollowup', { input: { itemtype: 'Change', items_id: aprobado.id,\n      content: `N8N (${ahora}): sshd_config cambió en ${d.host}. Nuevo hash de línea base: ${d.hash}.` } }).catch(() => {});\n    out.sql.push(`UPDATE sshd_baseline SET hash = '${d.hash}', actualizado = NOW(), motivo = 'Change #${Number(aprobado.id)} aprobado' ` +\n                 `WHERE host = '${d.host}';`);\n    out.alertas.push(alerta('C1', 'ADVERTENCIA', 'Cambio en configuración crítica (cubierto por un Change aprobado)', valor,\n      `Cambio cubierto por el Change #${aprobado.id}. El hash nuevo queda como línea base.`, null));\n    return [{ json: out }];\n  }\n\n  // Cambio NO autorizado → incidente crítico con SLA de 1 hora (A.5.26) + C1 y C2\n  const cat = Number($env.GLPI_CATEGORIA_ID || 0);\n  const sla = Number($env.GLPI_SLA_CRITICO_ID || 0);\n  const input = {\n    name: `Cambio no autorizado en sshd_config · ${d.host}`,\n    content: [\n      'Incidente creado automáticamente por N8N (alertas C1 y C2).',\n      `Host: ${d.host}`,\n      `Fecha de detección: ${ahora} (script: ${d.timestamp})`,\n      `Hash detectado: ${d.hash}`,\n      `Hash de línea base: ${base}`,\n      'Change aprobado en GLPI: No',\n      'Severidad: Crítica · SLA de resolución: 1 hora',\n      'Acción sugerida: identificar quién modificó sshd_config, registrar y aprobar un Change o revertir el archivo a la línea base.',\n      'Controles: ISO/IEC 27001 A.8.9, A.8.32 y A.5.26.'\n    ].join('<br>'),\n    type: 1,                 // incidente\n    urgency: 5, impact: 5, priority: 6   // prioridad \"Mayor\"\n  };\n  if (cat) input.itilcategories_id = cat;   // la regla de negocio de la categoría también puede asignar el SLA\n  if (sla) input.slas_id_ttr = sla;         // SLA crítico de 1 hora asignado directamente\n  if (srv) input.items_id = { Computer: [srv.id] };   // vínculo con el activo de la CMDB (A.5.9)\n  const t = await req('POST', '/Ticket', { input });\n  const id = Number(t.id);\n  out.sql.push(`INSERT INTO glpi_incidentes (ticket_id, host, hash_detectado, hash_base) ` +\n               `VALUES (${id}, '${d.host}', '${d.hash}', '${base}') ON CONFLICT (ticket_id) DO NOTHING;`);\n  out.alertas.push(alerta('C1', 'CRÍTICA', 'Cambio en configuración crítica', valor,\n    'Verificar quién modificó sshd_config y comparar el archivo contra la línea base (ISO/IEC 27001 A.8.9).', id));\n  out.alertas.push(alerta('C2', 'CRÍTICA', 'Cambio sin ticket aprobado',\n    `no existe un Change aprobado en GLPI para ${d.host}`,\n    'Registrar y aprobar un Change en GLPI o revertir sshd_config a la línea base. SLA de resolución: 1 hora (A.8.32).', id));\n} finally {\n  await cerrarSesion();\n}\nreturn [{ json: out }];\n"
+        },
+        "id": "f78402cb-b975-5f57-b233-6e518125e62c",
+        "name": "Decidir y gestionar en GLPI",
         "type": "n8n-nodes-base.code",
         "typeVersion": 2,
         "position": [
-          480,
+          660,
           0
         ]
       },
       {
         "parameters": {
-          "method": "POST",
-          "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
-          "sendBody": true,
-          "bodyParameters": {
-            "parameters": [
-              {
-                "name": "chat_id",
-                "value": "={{ $env.TELEGRAM_CHAT_ID }}"
-              },
-              {
-                "name": "text",
-                "value": "={{ $json.texto }}"
-              }
-            ]
+          "jsCode": "// Una alerta por ítem hacia Enviar_Alerta (formato oficial, anti-repetición y registro en alertas_auditoria)\nreturn ($input.first().json.alertas || []).map(a => ({ json: a }));\n"
+        },
+        "id": "7e38eee6-d9fd-55a6-9af8-f2ef1d73746f",
+        "name": "Separar alertas",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          880,
+          -160
+        ]
+      },
+      {
+        "parameters": {
+          "source": "database",
+          "workflowId": {
+            "__rl": true,
+            "value": "enviarAlertaNA01",
+            "mode": "id"
           },
           "options": {}
         },
-        "id": "111e4213-6fa2-4a1c-b3c7-dc94baaed25b",
-        "name": "Telegram",
-        "type": "n8n-nodes-base.httpRequest",
-        "typeVersion": 4.2,
+        "id": "f1234e8f-b294-50d8-b531-d7b88d22a863",
+        "name": "Enviar_Alerta",
+        "type": "n8n-nodes-base.executeWorkflow",
+        "typeVersion": 1.2,
         "position": [
-          720,
+          1100,
+          -160
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "// Un ítem por sentencia: actualiza las tablas de estado (sql/08_itsm_glpi.sql)\nreturn ($input.first().json.sql || []).map(s => ({ json: { sql: s } }));\n"
+        },
+        "id": "15dd1420-eeff-5dea-a4a5-9d8ae10087eb",
+        "name": "Separar SQL",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          880,
           0
         ]
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "={{ $json.sql }}",
+          "options": {}
+        },
+        "id": "e2f64556-c2c5-5503-b4a2-fe0d978d40a3",
+        "name": "Guardar estado",
+        "type": "n8n-nodes-base.postgres",
+        "typeVersion": 2.5,
+        "position": [
+          1100,
+          0
+        ],
+        "credentials": {
+          "postgres": {
+            "id": "pgMonitorN8N0001",
+            "name": "Postgres monitor_n8n"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "jsCode": "// Avisos informativos (línea base registrada, cierre automático): no son alertas C1–C3\nconst a = $input.first().json.aviso;\nreturn a ? [{ json: { texto: a } }] : [];\n"
+        },
+        "id": "2ed12cac-d90e-55c6-a7df-a38677727596",
+        "name": "Aviso informativo",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          880,
+          160
+        ]
+      },
+      {
+        "parameters": {
+          "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+          "text": "={{ $json.texto }}",
+          "additionalFields": {
+            "appendAttribution": false
+          }
+        },
+        "id": "49d7b7ba-6c35-5e44-9ff2-fa5c476a2594",
+        "name": "Telegram aviso",
+        "type": "n8n-nodes-base.telegram",
+        "typeVersion": 1.2,
+        "position": [
+          1100,
+          160
+        ],
+        "credentials": {
+          "telegramApi": {
+            "id": "telegramNA000001",
+            "name": "Telegram Bot NutriAnimales"
+          }
+        }
       }
     ],
     "connections": {
-      "Webhook": {
+      "Webhook hash-sshd": {
         "main": [
           [
             {
-              "node": "Comparación de hash",
+              "node": "Validar origen y hash",
               "type": "main",
               "index": 0
             }
           ]
         ]
       },
-      "Comparación de hash": {
+      "Validar origen y hash": {
         "main": [
           [
             {
-              "node": "HTTP a GLPI",
+              "node": "Línea base e incidente abierto",
               "type": "main",
               "index": 0
             }
           ]
         ]
       },
-      "HTTP a GLPI": {
+      "Línea base e incidente abierto": {
         "main": [
           [
             {
-              "node": "Telegram",
+              "node": "Decidir y gestionar en GLPI",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Decidir y gestionar en GLPI": {
+        "main": [
+          [
+            {
+              "node": "Separar alertas",
+              "type": "main",
+              "index": 0
+            },
+            {
+              "node": "Separar SQL",
+              "type": "main",
+              "index": 0
+            },
+            {
+              "node": "Aviso informativo",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Separar alertas": {
+        "main": [
+          [
+            {
+              "node": "Enviar_Alerta",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Separar SQL": {
+        "main": [
+          [
+            {
+              "node": "Guardar estado",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Aviso informativo": {
+        "main": [
+          [
+            {
+              "node": "Telegram aviso",
               "type": "main",
               "index": 0
             }
@@ -108,13 +258,22 @@
         ]
       }
     },
+    "versionId": "b2c04bc6-7b2d-56d0-803d-908f79bdc174",
+    "active": false,
     "settings": {
       "executionOrder": "v1",
-      "timezone": "America/Costa_Rica"
-    }
+      "timezone": "America/Costa_Rica",
+      "callerPolicy": "workflowsFromSameOwner"
+    },
+    "pinData": {},
+    "meta": {
+      "templateCredsSetupCompleted": true
+    },
+    "tags": []
   },
   {
-    "name": "Proyecto II · SLA vencido (C3)",
+    "id": "itsmC3SlaVenc001",
+    "name": "C3 - SLA vencido (GLPI)",
     "nodes": [
       {
         "parameters": {
@@ -127,8 +286,8 @@
             ]
           }
         },
-        "id": "6f599620-feb4-41fd-b3f4-b5279a28e572",
-        "name": "Cada minuto",
+        "id": "3721d29d-eaf2-5adb-b8dc-83fd52a452ad",
+        "name": "Cada 1 minuto",
         "type": "n8n-nodes-base.scheduleTrigger",
         "typeVersion": 1.2,
         "position": [
@@ -138,63 +297,161 @@
       },
       {
         "parameters": {
-          "jsCode": "// Buscar SLA vencidos: incidentes críticos abiertos más tiempo que el umbral (alerta C3)\nconst API = $env.GLPI_API_URL;\nconst umbral = Number($env.C3_UMBRAL_MINUTOS || 60);\nconst base = { 'Content-Type': 'application/json' };\nif ($env.GLPI_APP_TOKEN && $env.GLPI_APP_TOKEN !== '__cambiar__') base['App-Token'] = $env.GLPI_APP_TOKEN;\nconst req = (method, path, body, extra = {}) =>\n  this.helpers.httpRequest({ method, url: API + path, headers: { ...base, ...extra }, body, json: true });\nconst fecha = dt => dt.toLocaleString('es-CR', { timeZone: 'America/Costa_Rica', hour12: false });\n// GLPI devuelve las fechas en su zona horaria; por defecto se asume UTC\nconst aFecha = s => new Date(s.replace(' ', 'T') + (($env.GLPI_FECHAS_UTC || 'true') === 'true' ? 'Z' : ''));\n\nconst estado = $getWorkflowStaticData('global');\nestado.alertados = estado.alertados || [];\nconst ses = await req('GET', '/initSession', undefined, { Authorization: 'user_token ' + $env.GLPI_USER_TOKEN });\nbase['Session-Token'] = ses.session_token;\nconst out = [];\ntry {\n  const tickets = await req('GET', '/Ticket?range=0-200&sort=id&order=DESC');\n  const ahora = new Date();\n  for (const t of tickets) {\n    if (!String(t.name).startsWith('Cambio no autorizado en sshd_config') || Number(t.status) >= 5) continue;\n    if (estado.alertados.includes(t.id)) continue;\n    const min = Math.floor((ahora - aFecha(t.date)) / 60000);\n    if (min < umbral) continue;\n    estado.alertados.push(t.id);\n    out.push({ json: { alerta: 'C3', ticket: t.id, texto: [\n      '🚨 ALERTA C3 · SLA vencido',\n      'NutriAnimales S.A. | Proyecto II · BCD 9220',\n      'Tipo: SLA vencido',\n      `Fecha: ${fecha(ahora)}`,\n      `Valor detectado: incidente crítico abierto hace ${min} min (umbral ${umbral} min)`,\n      'Severidad: CRÍTICA',\n      'Norma: ISO/IEC 27001 A.5.26 · ITIL gestión de niveles de servicio',\n      'Acción sugerida: escalar al responsable del SGSI y atender el incidente de inmediato.',\n      `Ticket GLPI: #${t.id}`\n    ].join('\\n') } });\n  }\n} finally {\n  await req('GET', '/killSession').catch(() => {});\n}\nreturn out;\n"
+          "operation": "executeQuery",
+          "query": "={{ \"SELECT ticket_id, host, round(extract(epoch FROM now() - creado) / 60)::int AS minutos FROM glpi_incidentes WHERE cerrado IS NULL AND c3_enviada IS NULL AND now() - creado >= make_interval(mins => \" + Math.max(1, parseInt($env.C3_UMBRAL_MINUTOS || 60, 10) || 60) + \");\" }}",
+          "options": {}
         },
-        "id": "153ea979-fa83-4e42-ac8a-25a18b6ddc23",
-        "name": "Buscar SLA vencidos en GLPI",
+        "id": "8e29f162-7ca7-5a41-ac32-4305b91a30e7",
+        "name": "Incidentes abiertos fuera de umbral",
+        "type": "n8n-nodes-base.postgres",
+        "typeVersion": 2.5,
+        "position": [
+          220,
+          0
+        ],
+        "credentials": {
+          "postgres": {
+            "id": "pgMonitorN8N0001",
+            "name": "Postgres monitor_n8n"
+          }
+        },
+        "alwaysOutputData": true
+      },
+      {
+        "parameters": {
+          "jsCode": "// C3 · SLA vencido: incidentes críticos abiertos por más del umbral (60 min; se baja solo para la demo).\n// La hora de apertura y la marca \"C3 enviada\" están en PostgreSQL (glpi_incidentes): así no se repite\n// la alerta cada minuto y no depende de la zona horaria de GLPI.\nconst filas = $input.all().map(i => i.json).filter(r => r.ticket_id);\nif (!filas.length) return [];\nconst umbral = Math.max(1, parseInt($env.C3_UMBRAL_MINUTOS || 60, 10) || 60);\nconst out = { alertas: [], sql: [] };\n\n// ---- API REST de GLPI (red interna; tokens en el .env) ----\nconst API = $env.GLPI_API_URL;\nconst cab = { 'Content-Type': 'application/json', 'App-Token': $env.GLPI_APP_TOKEN };\nconst req = (method, path, body, extra = {}) =>\n  this.helpers.httpRequest({ method, url: API + path, headers: { ...cab, ...extra }, body, json: true });\nconst abrirSesion = async () => {\n  const s = await req('GET', '/initSession', undefined, { Authorization: 'user_token ' + $env.GLPI_USER_TOKEN });\n  cab['Session-Token'] = s.session_token;\n};\nconst cerrarSesion = () => req('GET', '/killSession').catch(() => {});\n\nawait abrirSesion();\ntry {\n  for (const r of filas) {\n    const id = Number(r.ticket_id);\n    const t = await req('GET', `/Ticket/${id}`).catch(() => null);\n    if (t && Number(t.status) >= 5) {\n      // Lo resolvieron o cerraron a mano en GLPI: se registra y no se alerta\n      out.sql.push(`UPDATE glpi_incidentes SET cerrado = NOW(), cierre = 'Manual en GLPI' WHERE ticket_id = ${id} AND cerrado IS NULL;`);\n      continue;\n    }\n    const ttr = t && t.time_to_resolve ? ` · vencimiento SLA en GLPI: ${t.time_to_resolve}` : '';\n    out.alertas.push({\n      codigo: 'C3', severidad: 'CRÍTICA', tipo: 'SLA vencido',\n      tabla: `Incidente GLPI · ${r.host}`,\n      detalle: `Valor detectado: incidente crítico abierto hace ${r.minutos} min (umbral ${umbral} min)${ttr}\\nTicket GLPI: #${id}`,\n      query: 'glpi_incidentes (cerrado IS NULL)',\n      usuario: 'N8N · ITIL gestión de niveles de servicio',\n      accion: 'Escalar al responsable del SGSI y atender el incidente de inmediato (ISO/IEC 27001 A.5.26).'\n    });\n    out.sql.push(`UPDATE glpi_incidentes SET c3_enviada = NOW() WHERE ticket_id = ${id};`);\n  }\n} finally {\n  await cerrarSesion();\n}\nreturn [{ json: out }];\n"
+        },
+        "id": "87e10020-1ed8-5bb1-b163-0d73d9161c9a",
+        "name": "Confirmar en GLPI y armar C3",
         "type": "n8n-nodes-base.code",
         "typeVersion": 2,
         "position": [
-          240,
+          440,
           0
         ]
       },
       {
         "parameters": {
-          "method": "POST",
-          "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
-          "sendBody": true,
-          "bodyParameters": {
-            "parameters": [
-              {
-                "name": "chat_id",
-                "value": "={{ $env.TELEGRAM_CHAT_ID }}"
-              },
-              {
-                "name": "text",
-                "value": "={{ $json.texto }}"
-              }
-            ]
+          "jsCode": "// Una alerta por ítem hacia Enviar_Alerta (formato oficial, anti-repetición y registro en alertas_auditoria)\nreturn ($input.first().json.alertas || []).map(a => ({ json: a }));\n"
+        },
+        "id": "7e38eee6-d9fd-55a6-9af8-f2ef1d73746f",
+        "name": "Separar alertas",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          660,
+          -80
+        ]
+      },
+      {
+        "parameters": {
+          "source": "database",
+          "workflowId": {
+            "__rl": true,
+            "value": "enviarAlertaNA01",
+            "mode": "id"
           },
           "options": {}
         },
-        "id": "f3f6f00b-3d0f-46a5-aa11-e790b4a66c7a",
-        "name": "Telegram",
-        "type": "n8n-nodes-base.httpRequest",
-        "typeVersion": 4.2,
+        "id": "f1234e8f-b294-50d8-b531-d7b88d22a863",
+        "name": "Enviar_Alerta",
+        "type": "n8n-nodes-base.executeWorkflow",
+        "typeVersion": 1.2,
         "position": [
-          480,
-          0
+          880,
+          -80
         ]
+      },
+      {
+        "parameters": {
+          "jsCode": "// Un ítem por sentencia: actualiza las tablas de estado (sql/08_itsm_glpi.sql)\nreturn ($input.first().json.sql || []).map(s => ({ json: { sql: s } }));\n"
+        },
+        "id": "15dd1420-eeff-5dea-a4a5-9d8ae10087eb",
+        "name": "Separar SQL",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          660,
+          80
+        ]
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "={{ $json.sql }}",
+          "options": {}
+        },
+        "id": "e2f64556-c2c5-5503-b4a2-fe0d978d40a3",
+        "name": "Guardar estado",
+        "type": "n8n-nodes-base.postgres",
+        "typeVersion": 2.5,
+        "position": [
+          880,
+          80
+        ],
+        "credentials": {
+          "postgres": {
+            "id": "pgMonitorN8N0001",
+            "name": "Postgres monitor_n8n"
+          }
+        }
       }
     ],
     "connections": {
-      "Cada minuto": {
+      "Cada 1 minuto": {
         "main": [
           [
             {
-              "node": "Buscar SLA vencidos en GLPI",
+              "node": "Incidentes abiertos fuera de umbral",
               "type": "main",
               "index": 0
             }
           ]
         ]
       },
-      "Buscar SLA vencidos en GLPI": {
+      "Incidentes abiertos fuera de umbral": {
         "main": [
           [
             {
-              "node": "Telegram",
+              "node": "Confirmar en GLPI y armar C3",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Confirmar en GLPI y armar C3": {
+        "main": [
+          [
+            {
+              "node": "Separar alertas",
+              "type": "main",
+              "index": 0
+            },
+            {
+              "node": "Separar SQL",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Separar alertas": {
+        "main": [
+          [
+            {
+              "node": "Enviar_Alerta",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Separar SQL": {
+        "main": [
+          [
+            {
+              "node": "Guardar estado",
               "type": "main",
               "index": 0
             }
@@ -202,9 +459,17 @@
         ]
       }
     },
+    "versionId": "85338057-6cdd-5e70-860b-1b5d4f5aa982",
+    "active": false,
     "settings": {
       "executionOrder": "v1",
-      "timezone": "America/Costa_Rica"
-    }
+      "timezone": "America/Costa_Rica",
+      "callerPolicy": "workflowsFromSameOwner"
+    },
+    "pinData": {},
+    "meta": {
+      "templateCredsSetupCompleted": true
+    },
+    "tags": []
   }
 ]

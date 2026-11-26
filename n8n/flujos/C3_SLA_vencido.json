@@ -1,0 +1,201 @@
+{
+  "id": "itsmC3SlaVenc001",
+  "name": "C3 - SLA vencido (GLPI)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "3721d29d-eaf2-5adb-b8dc-83fd52a452ad",
+      "name": "Cada 1 minuto",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ \"SELECT ticket_id, host, round(extract(epoch FROM now() - creado) / 60)::int AS minutos FROM glpi_incidentes WHERE cerrado IS NULL AND c3_enviada IS NULL AND now() - creado >= make_interval(mins => \" + Math.max(1, parseInt($env.C3_UMBRAL_MINUTOS || 60, 10) || 60) + \");\" }}",
+        "options": {}
+      },
+      "id": "8e29f162-7ca7-5a41-ac32-4305b91a30e7",
+      "name": "Incidentes abiertos fuera de umbral",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        220,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgMonitorN8N0001",
+          "name": "Postgres monitor_n8n"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// C3 · SLA vencido: incidentes críticos abiertos por más del umbral (60 min; se baja solo para la demo).\n// La hora de apertura y la marca \"C3 enviada\" están en PostgreSQL (glpi_incidentes): así no se repite\n// la alerta cada minuto y no depende de la zona horaria de GLPI.\nconst filas = $input.all().map(i => i.json).filter(r => r.ticket_id);\nif (!filas.length) return [];\nconst umbral = Math.max(1, parseInt($env.C3_UMBRAL_MINUTOS || 60, 10) || 60);\nconst out = { alertas: [], sql: [] };\n\n// ---- API REST de GLPI (red interna; tokens en el .env) ----\nconst API = $env.GLPI_API_URL;\nconst cab = { 'Content-Type': 'application/json', 'App-Token': $env.GLPI_APP_TOKEN };\nconst req = (method, path, body, extra = {}) =>\n  this.helpers.httpRequest({ method, url: API + path, headers: { ...cab, ...extra }, body, json: true });\nconst abrirSesion = async () => {\n  const s = await req('GET', '/initSession', undefined, { Authorization: 'user_token ' + $env.GLPI_USER_TOKEN });\n  cab['Session-Token'] = s.session_token;\n};\nconst cerrarSesion = () => req('GET', '/killSession').catch(() => {});\n\nawait abrirSesion();\ntry {\n  for (const r of filas) {\n    const id = Number(r.ticket_id);\n    const t = await req('GET', `/Ticket/${id}`).catch(() => null);\n    if (t && Number(t.status) >= 5) {\n      // Lo resolvieron o cerraron a mano en GLPI: se registra y no se alerta\n      out.sql.push(`UPDATE glpi_incidentes SET cerrado = NOW(), cierre = 'Manual en GLPI' WHERE ticket_id = ${id} AND cerrado IS NULL;`);\n      continue;\n    }\n    const ttr = t && t.time_to_resolve ? ` · vencimiento SLA en GLPI: ${t.time_to_resolve}` : '';\n    out.alertas.push({\n      codigo: 'C3', severidad: 'CRÍTICA', tipo: 'SLA vencido',\n      tabla: `Incidente GLPI · ${r.host}`,\n      detalle: `Valor detectado: incidente crítico abierto hace ${r.minutos} min (umbral ${umbral} min)${ttr}\\nTicket GLPI: #${id}`,\n      query: 'glpi_incidentes (cerrado IS NULL)',\n      usuario: 'N8N · ITIL gestión de niveles de servicio',\n      accion: 'Escalar al responsable del SGSI y atender el incidente de inmediato (ISO/IEC 27001 A.5.26).'\n    });\n    out.sql.push(`UPDATE glpi_incidentes SET c3_enviada = NOW() WHERE ticket_id = ${id};`);\n  }\n} finally {\n  await cerrarSesion();\n}\nreturn [{ json: out }];\n"
+      },
+      "id": "87e10020-1ed8-5bb1-b163-0d73d9161c9a",
+      "name": "Confirmar en GLPI y armar C3",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Una alerta por ítem hacia Enviar_Alerta (formato oficial, anti-repetición y registro en alertas_auditoria)\nreturn ($input.first().json.alertas || []).map(a => ({ json: a }));\n"
+      },
+      "id": "7e38eee6-d9fd-55a6-9af8-f2ef1d73746f",
+      "name": "Separar alertas",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "enviarAlertaNA01",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "f1234e8f-b294-50d8-b531-d7b88d22a863",
+      "name": "Enviar_Alerta",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        880,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Un ítem por sentencia: actualiza las tablas de estado (sql/08_itsm_glpi.sql)\nreturn ($input.first().json.sql || []).map(s => ({ json: { sql: s } }));\n"
+      },
+      "id": "15dd1420-eeff-5dea-a4a5-9d8ae10087eb",
+      "name": "Separar SQL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.sql }}",
+        "options": {}
+      },
+      "id": "e2f64556-c2c5-5503-b4a2-fe0d978d40a3",
+      "name": "Guardar estado",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        880,
+        80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgMonitorN8N0001",
+          "name": "Postgres monitor_n8n"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Cada 1 minuto": {
+      "main": [
+        [
+          {
+            "node": "Incidentes abiertos fuera de umbral",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Incidentes abiertos fuera de umbral": {
+      "main": [
+        [
+          {
+            "node": "Confirmar en GLPI y armar C3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Confirmar en GLPI y armar C3": {
+      "main": [
+        [
+          {
+            "node": "Separar alertas",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Separar SQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Separar alertas": {
+      "main": [
+        [
+          {
+            "node": "Enviar_Alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Separar SQL": {
+      "main": [
+        [
+          {
+            "node": "Guardar estado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "versionId": "85338057-6cdd-5e70-860b-1b5d4f5aa982",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Costa_Rica",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

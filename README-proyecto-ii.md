@@ -6,9 +6,9 @@ Integrantes: David Mora · Jean Rabbat · Luis Rojas · Jorge Chaves · Cristian
 Continuación del Proyecto I. Sobre el mismo stack (Docker, PostgreSQL, N8N, Nginx y Telegram) se agrega **GLPI** como herramienta central de gestión de servicios de TI. El flujo completo es:
 
 1. **Detecta:** `scripts/hash_sshd.sh` calcula el SHA-256 de `sshd_config` y lo envía al webhook de N8N.
-2. **Decide:** N8N compara el hash con la línea base y consulta en GLPI si existe un Change aprobado.
+2. **Decide:** N8N compara el hash con la línea base guardada en PostgreSQL y consulta en GLPI si existe un Change aprobado.
 3. **Gestiona:** N8N crea el incidente en GLPI con SLA crítico de 1 hora y lo cierra cuando el hash vuelve a la línea base.
-4. **Notifica:** N8N envía las alertas C1, C2 y C3 a Telegram.
+4. **Notifica:** N8N envía las alertas C1, C2 y C3 a Telegram con el subflujo `Enviar_Alerta` del Proyecto I.
 
 ---
 
@@ -16,49 +16,56 @@ Continuación del Proyecto I. Sobre el mismo stack (Docker, PostgreSQL, N8N, Ngi
 
 | Archivo | Para qué sirve |
 |---|---|
-| `docker-compose.glpi.yml` | GLPI 10.0 y su base de datos MariaDB. Es un archivo aparte para no modificar el compose del Proyecto I. |
-| `.env.example` | Variables nuevas de GLPI y del script de hash (al final del archivo). |
-| `scripts/hash_sshd.sh` | Script que calcula el hash de `sshd_config` y lo envía a N8N. |
+| `docker-compose.glpi.yml` | GLPI 10.0 y MariaDB, sin puertos publicados. Amplía Nginx (puerto 8444) y N8N (variables). Archivo aparte para no modificar el compose del Proyecto I. |
+| `nginx/glpi.conf` | Sitio HTTPS de GLPI en Nginx (8444), con los headers de seguridad. |
+| `sql/08_itsm_glpi.sql` | Tablas de estado del flujo: `sshd_baseline` (línea base) y `glpi_incidentes` (incidentes abiertos por N8N, marca de C3), más la vista `vw_tiempos_incidentes`. |
+| `n8n/flujos/C1C2_Cambio_sshd_config.json` | Flujo de detección: webhook, comparación, GLPI y alertas C1 y C2. |
+| `n8n/flujos/C3_SLA_vencido.json` | Flujo programado: alerta C3 cuando un incidente crítico supera el SLA. |
+| `n8n_workflow.json` | Export de los dos flujos en un solo archivo (entregable del ZIP). |
+| `scripts/hash_sshd.sh` | Calcula el hash de `sshd_config` y lo envía a N8N con un secreto compartido. |
+| `.env.example` | Variables nuevas del Proyecto II (al final del archivo). |
 
-GLPI queda en `http://<IP_DEL_SERVIDOR>:8090`. Su base de datos no publica puertos: solo GLPI la alcanza por la red interna `nutrianimales-net`.
+### Decisiones de seguridad (coherentes con el Proyecto I)
+
+| Decisión | Motivo |
+|---|---|
+| GLPI y MariaDB **sin `ports:`**; GLPI sale solo por Nginx en `https://<IP>:8444` | Docker publica puertos por encima de UFW: un `ports:` en GLPI quedaría abierto a toda la red y sin cifrar. Igual que HD04, Nginx es el único punto de entrada. |
+| El webhook exige el header `X-Hash-Token` | Sin él, cualquiera en la red podría enviar un hash falso, o el de la línea base para cerrar el incidente solo. |
+| Línea base y estado de los incidentes en **PostgreSQL** | En N8N 2.x la memoria de un flujo publicado no se conserva entre ejecuciones (mismo caso que H2). Además, las horas salen de un solo reloj y no dependen de la zona horaria de GLPI. |
+| El script lee **solo sus variables** del `.env` | Un `source` del `.env` completo falla con contraseñas que tienen `$`, `\|` o espacios, y carga secretos que no usa. |
+| El script **valida el certificado** de Nginx (`--cacert`) | No se desactiva TLS; `N8N_TLS_INSECURE=true` queda solo como último recurso. |
 
 ---
 
 ## 2. Requisitos
 
 - El stack del Proyecto I instalado y funcionando (sección 5 del `README.md` principal).
-- Puerto **8090** libre en el servidor.
+- Al menos **2 GB de RAM libres** en la VM para GLPI y MariaDB.
 
 ---
 
 ## 3. Instalación paso a paso
 
-### 3.1 Actualizar el repositorio
+> Todos los comandos son en el servidor (📍 Ubuntu/SSH), dentro de la carpeta del repositorio: `cd ~/nutrianimales`
+
+### 3.1 Actualizar el repositorio y el `.env`
 
 ```bash
-cd ~/Sistema-de-Monitoreo-Proactivo-Seguridad-y-Hardening-de-Base-de-Datos
 git pull
+bash scripts/preparar_entorno.sh
 ```
 
-### 3.2 Agregar las variables nuevas al `.env`
-
-El `.env` del servidor ya existe, así que hay que copiarle a mano el bloque nuevo que está al final de `.env.example` (desde `# --- Proyecto II: compose combinado`).
-
-```bash
-# Ver el bloque nuevo
-tail -n 17 .env.example
-
-# Abrir el .env y pegarlo al final
-nano .env
-```
-
-Luego completar:
-
-- `GLPI_DB_PASSWORD`: generar una con `openssl rand -base64 18`.
-- `N8N_WEBHOOK_URL`: cambiar la IP por la del servidor (la misma de `SERVIDOR_IP`).
-- `GLPI_APP_TOKEN` y `GLPI_USER_TOKEN` se dejan en `__cambiar__` por ahora; se completan en el paso 3.5.
+`preparar_entorno.sh` no toca lo que ya existe: solo **agrega** al `.env` las variables nuevas del Proyecto II, con `GLPI_DB_PASSWORD` y `HASH_WEBHOOK_TOKEN` generados al azar. `GLPI_APP_TOKEN` y `GLPI_USER_TOKEN` quedan en `__cambiar__` hasta el paso 3.5.
 
 La línea `COMPOSE_FILE` hace que `docker compose` use los tres archivos (base, logs y GLPI) sin escribir `-f`.
+
+### 3.2 Crear las tablas del flujo en PostgreSQL
+
+En una instalación nueva se crean solas. En el servidor que ya tiene la base de datos del Proyecto I:
+
+```bash
+docker exec -i nutri_postgres psql -U postgres -d nutrianimales_db < sql/08_itsm_glpi.sql
+```
 
 ### 3.3 Levantar el stack completo
 
@@ -67,58 +74,59 @@ docker compose up -d
 docker compose ps        # 7 servicios: postgres, n8n, nginx, loki, alloy, glpi_db y glpi
 ```
 
-La primera vez, GLPI instala su base de datos solo. Puede tardar uno o dos minutos; se puede seguir con `docker logs -f nutri_glpi`.
+`nutri_nginx` debe mostrar `8080`, `8443` y `8444`; `nutri_glpi` y `nutri_glpi_db` **no** muestran puertos. La primera vez, GLPI instala su base de datos solo; puede tardar uno o dos minutos (`docker logs -f nutri_glpi`).
 
 ### 3.4 Primer ingreso a GLPI
 
-1. Abrir `http://<IP_DEL_SERVIDOR>:8090`.
-2. Entrar con el usuario por defecto `glpi` / contraseña `glpi`.
+1. Abrir `https://<IP_DEL_SERVIDOR>:8444` (el navegador avisa del certificado autofirmado, igual que con N8N).
+2. Entrar con `glpi` / `glpi`.
 3. Cambiar de inmediato las contraseñas de las cuentas por defecto (`glpi`, `tech`, `normal` y `post-only`); GLPI muestra un aviso con los enlaces.
+4. **Configuración → General → Configuración general → URL de la aplicación:** `https://<IP_DEL_SERVIDOR>:8444`.
 
 ### 3.5 Activar la API REST y generar los tokens
 
 1. **Configuración → General → pestaña API**
-   - Activar **Habilitar API REST**.
-   - Activar **Habilitar inicio de sesión con token externo**.
-   - Guardar.
-2. En esa misma pestaña, **Añadir cliente API**:
-   - Nombre: `n8n`
-   - Activo: Sí
-   - Rango de IP: dejar vacío para el laboratorio.
-   - Guardar y copiar el **Token de aplicación (app_token)** → va en `GLPI_APP_TOKEN`.
-3. **Administración → Usuarios → glpi** (o un usuario dedicado para N8N, recomendado):
-   - En **Claves de acceso remoto**, marcar **Regenerar** junto a **Token de API** y guardar.
-   - Copiar el token → va en `GLPI_USER_TOKEN`.
-4. Guardar ambos tokens en el `.env` y recrear N8N para que los tome:
+   - Activar **Habilitar API REST** y **Habilitar inicio de sesión con token externo**. Guardar.
+   - **Añadir cliente API:** nombre `n8n`, activo, rango de IP vacío (laboratorio). Guardar y copiar el **Token de aplicación** → `GLPI_APP_TOKEN`.
+2. **Administración → Usuarios → Añadir:** usuario `n8n` (cuenta de servicio, perfil *Technician*, entidad raíz).
+   - En **Claves de acceso remoto**, marcar **Regenerar** junto a **Token de API** y guardar. Copiar el token → `GLPI_USER_TOKEN`.
+3. Guardar ambos tokens en el `.env` y recrear N8N para que los tome:
 
 ```bash
 nano .env
 docker compose up -d n8n
 ```
 
-### 3.6 Probar la API desde el servidor
+> Tras recrear N8N, los flujos tardan unos 3 minutos en volver a alertar. No hacerlo justo antes de una demo.
+
+### 3.6 Probar la API
 
 ```bash
-source .env
-curl -s -H "App-Token: ${GLPI_APP_TOKEN}" \
-     -H "Authorization: user_token ${GLPI_USER_TOKEN}" \
-     http://localhost:8090/apirest.php/initSession
+APP=$(grep ^GLPI_APP_TOKEN= .env | cut -d= -f2-); USR=$(grep ^GLPI_USER_TOKEN= .env | cut -d= -f2-)
+curl -sk -H "App-Token: $APP" -H "Authorization: user_token $USR" https://localhost:8444/apirest.php/initSession
 ```
 
-Debe responder algo como `{"session_token":"..."}`. Si responde un error, revisar el paso 3.5.
+Debe responder `{"session_token":"..."}`. Dentro de N8N, la API se usa por la red interna (`http://glpi/apirest.php`).
 
-Dentro de N8N, la API se usa por la red interna con las variables `$env.GLPI_API_URL`, `$env.GLPI_APP_TOKEN` y `$env.GLPI_USER_TOKEN`.
-
-### 3.7 Script de hash de `sshd_config`
+### 3.7 Cargar los flujos de N8N
 
 ```bash
-chmod +x scripts/hash_sshd.sh
+bash scripts/init_n8n_m3.sh
+```
 
-# Prueba sin enviar nada: muestra el JSON
-sudo ./scripts/hash_sshd.sh --dry-run
+Importa y activa los 21 flujos (los 19 del Proyecto I más C1/C2 y C3). El flujo C1/C2 usa el subflujo `Enviar_Alerta`, así que las alertas del Proyecto II quedan también en `alertas_auditoria`.
 
-# Envío real a N8N (requiere el flujo con el webhook "hash-sshd" activo)
-sudo ./scripts/hash_sshd.sh
+### 3.8 Script de hash y línea base
+
+```bash
+./scripts/hash_sshd.sh --dry-run     # muestra el JSON sin enviarlo
+./scripts/hash_sshd.sh               # primer envío: N8N lo guarda como línea base
+```
+
+El primer envío de cada servidor queda como **línea base** (tabla `sshd_baseline`) y llega un aviso a Telegram. Para que corra solo cada 5 minutos (`crontab -e`, con el usuario dueño del repositorio):
+
+```
+*/5 * * * * /home/<usuario>/nutrianimales/scripts/hash_sshd.sh >> /home/<usuario>/nutrianimales/logs/hash_sshd.log 2>&1
 ```
 
 El JSON que envía tiene el formato del enunciado:
@@ -127,31 +135,59 @@ El JSON que envía tiene el formato del enunciado:
 { "hash_sshd": "<sha256>", "timestamp": "2026-12-10T10:00:00Z", "host": "nutrianimales-srv01" }
 ```
 
-Para que corra solo cada 5 minutos, agregar con `sudo crontab -e`:
-
-```
-*/5 * * * * /ruta/al/repo/scripts/hash_sshd.sh >> /var/log/hash_sshd.log 2>&1
-```
-
-Si `curl` rechaza el certificado autofirmado de Nginx, poner `N8N_TLS_INSECURE=true` en el `.env`.
-
 ---
 
-## 4. Configuración funcional en GLPI (resumen)
+## 4. Configuración funcional en GLPI
 
-| Elemento | Dónde | Qué configurar |
+| Elemento | Dónde | Qué configurar | Control |
+|---|---|---|---|
+| CMDB | Activos → Computadoras | Servidor `nutrianimales-srv01` (el nombre debe coincidir con `HOST_NAME`) | A.5.9 |
+| Contenedores | Activos → Software o Dispositivos genéricos | Los 7 contenedores del stack, vinculados al servidor (pestaña de relaciones o componentes) | A.5.9 |
+| Categoría | Configuración → Desplegables → Categorías ITIL | `Seguridad > Cambio de configuración`. Su ID va en `GLPI_CATEGORIA_ID` | A.5.26 |
+| SLA | Configuración → Niveles de servicio | Servicio con calendario 24/7. SLA de tiempo de resolución: **crítico 1 h**, alta 4 h, media 8 h, baja 24 h. El ID del crítico va en `GLPI_SLA_CRITICO_ID` | A.5.26 |
+| Regla de SLA | Administración → Reglas → Reglas de negocio para tickets | Si la categoría es *Cambio de configuración* → asignar el SLA crítico (respaldo de la variable anterior) | A.5.26 |
+| Cambios | Asistencia → Cambios | Change vinculado al servidor, con aprobador, plan de reversión y estado *Aplicado* al terminar | A.8.32 |
+| Problemas | Asistencia → Problemas | Problema vinculado al incidente, con causa raíz | ITIL |
+
+### Roles del grupo y usuarios en GLPI
+
+| Rol del proyecto | Integrante | Usuario y perfil en GLPI |
 |---|---|---|
-| CMDB | Activos → Computadoras | Servidor `nutrianimales-srv01` y los contenedores relacionados |
-| SLA | Configuración → Niveles de servicio | SLA de tiempo de resolución de 1 hora para severidad crítica, con calendario 24/7 |
-| Regla de SLA | Administración → Reglas → Reglas de negocio para tickets | Asignar el SLA crítico a los incidentes de la categoría de N8N |
-| Cambios | Asistencia → Cambios | Change con aprobador, plan de reversión y estado ejecutado |
-| Problemas | Asistencia → Problemas | Problema vinculado al incidente, con causa raíz |
-
-El detalle de cada práctica está en el informe técnico (sección ITIL 4 en GLPI).
+| Infraestructura (GLPI, CMDB, API) | David Mora | `dmora` · Super-Admin |
+| Aprobador de cambios | Por definir | Perfil *Supervisor* (valida Changes) |
+| Automatización (N8N y script) | Por definir | Cuenta de servicio `n8n` · *Technician* (solo API) |
+| Auditor (auditoría interna) | Cristian Vargas | Perfil *Observer* (solo lectura) |
 
 ---
 
-## 5. Reiniciar GLPI desde cero
+## 5. Comportamiento del flujo
+
+| Situación | Qué hace N8N | Telegram |
+|---|---|---|
+| Primer hash del servidor | Lo guarda como línea base | Aviso informativo |
+| Hash igual a la línea base, sin incidente | Nada | — |
+| Hash distinto, **sin** Change aprobado | Crea el incidente (urgencia e impacto 5, SLA crítico, vinculado al servidor) | **C1** y **C2** con el número de ticket |
+| Hash distinto con el incidente ya abierto | Nada (no repite alertas en cada ejecución del cron) | — |
+| Hash distinto **con** un Change aprobado y no aplicado vinculado al servidor | El hash nuevo pasa a ser la línea base y se anota en el Change | **C1** informativa (ADVERTENCIA) |
+| El hash vuelve a la línea base con un incidente abierto | Seguimiento y **cierre automático** del incidente | Aviso de cierre |
+| Incidente abierto más de `C3_UMBRAL_MINUTOS` | Marca la alerta como enviada (una sola vez por incidente) | **C3** |
+| Se envía un JSON sin `X-Hash-Token` válido | Se descarta | — |
+
+### Tiempos del estudio de caso
+
+```bash
+docker exec nutri_postgres psql -U postgres -d nutrianimales_db -c "SELECT * FROM vw_tiempos_incidentes;"
+```
+
+Muestra la apertura y el cierre de cada incidente, los minutos abierto y si se cerró dentro del SLA de 1 hora.
+
+### Demostrar C3 sin esperar una hora
+
+Poner `C3_UMBRAL_MINUTOS=2` en el `.env` y `docker compose up -d n8n` (esperar unos 3 minutos). Volver a `60` al terminar. El estudio de caso principal debe cerrarse **dentro** de la hora; C3 se demuestra con un segundo incidente.
+
+---
+
+## 6. Reiniciar GLPI desde cero
 
 Borra solo los datos de GLPI; no toca PostgreSQL ni N8N.
 
@@ -159,50 +195,20 @@ Borra solo los datos de GLPI; no toca PostgreSQL ni N8N.
 docker compose stop glpi glpi_db
 docker compose rm -f glpi glpi_db
 sudo rm -rf volumes/glpi volumes/glpi_db
+docker exec nutri_postgres psql -U postgres -d nutrianimales_db -c "TRUNCATE glpi_incidentes;"
 docker compose up -d
 ```
 
 ---
 
-## 6. Problemas comunes
+## 7. Problemas comunes
 
 | Síntoma | Causa probable | Solución |
 |---|---|---|
 | `glpi` no arranca y queda esperando | `glpi_db` todavía no está lista | Esperar; `docker compose ps` debe mostrar `glpi_db (healthy)` |
-| La página de GLPI no carga | Puerto 8090 bloqueado por UFW | `sudo ufw allow from 192.168.56.0/24 to any port 8090 proto tcp` |
+| `https://<IP>:8444` no carga | El stack se levantó sin `docker-compose.glpi.yml` | Revisar `COMPOSE_FILE` en el `.env` y repetir `docker compose up -d` |
 | La API responde `ERROR_APP_TOKEN_PARAMETERS_MISSING` o similar | Falta el app_token o la API está desactivada | Revisar el paso 3.5 |
-| El script da `[ERROR] Falta N8N_WEBHOOK_URL` | Variable no copiada al `.env` | Revisar el paso 3.2 |
-| El script no conecta con N8N | Flujo inactivo o certificado rechazado | Activar el flujo en N8N o usar `N8N_TLS_INSECURE=true` |
-
----
-
-## 7. Flujos de N8N (`n8n_workflow.json`)
-
-El archivo `n8n_workflow.json` trae los dos flujos del proyecto, probados de punta a punta en un laboratorio:
-
-| Flujo | Nodos | Qué hace |
-|---|---|---|
-| Detección de cambios en sshd_config (C1 y C2) | Webhook → Comparación de hash → HTTP a GLPI → Telegram | Recibe el hash del script, lo compara con la línea base, consulta si hay un Change aprobado, crea el incidente con SLA de 1 h, envía C1 y C2 y, cuando el hash vuelve a la línea base, cierra el incidente y avisa por Telegram. |
-| SLA vencido (C3) | Cada minuto → Buscar SLA vencidos en GLPI → Telegram | Revisa los incidentes críticos abiertos y envía la alerta C3 cuando superan el umbral (60 minutos por defecto). |
-
-### 7.1 Variables que necesita en el `.env`
-
-Además de `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `GLPI_APP_TOKEN` y `GLPI_USER_TOKEN`:
-
-| Variable | Valor |
-|---|---|
-| `GLPI_CATEGORIA_ID` | ID de la categoría "Seguridad > Cambio de configuración" en GLPI (aparece en la URL al abrirla) |
-| `SSHD_BASELINE_HASH` | Hash de línea base: el que muestra `sudo ./scripts/hash_sshd.sh --dry-run` con la configuración aprobada |
-| `C3_UMBRAL_MINUTOS` | 60 en operación normal; se puede bajar a 2 para demostrar la alerta C3 |
-
-Después de editar el `.env`: `docker compose up -d n8n`.
-
-### 7.2 Importar los flujos
-
-1. En N8N: **Workflows → Import from file** y elegir `n8n_workflow.json` (trae los dos flujos).
-2. Abrir cada flujo y **activarlo / publicarlo**.
-3. Probar con `sudo ./scripts/hash_sshd.sh`: si el hash coincide con la línea base no pasa nada; si se cambia `sshd_config`, llegan C1 y C2 a Telegram y aparece el incidente en GLPI.
-
-Notas:
-- Las alertas usan el nodo HTTP Request hacia la API de Telegram con las variables del `.env`, por lo que no hace falta crear credenciales en N8N. Si el equipo prefiere usar el subflujo `Enviar_Alerta` del Proyecto I, se puede reemplazar el nodo **Telegram** por un nodo *Execute Workflow* que lo llame.
-- Cuando se aplique un cambio aprobado que modifique `sshd_config` a propósito, hay que actualizar `SSHD_BASELINE_HASH` con el hash nuevo.
+| El script da `Falta HASH_WEBHOOK_TOKEN` | Variable no agregada al `.env` | `bash scripts/preparar_entorno.sh` |
+| El script da `no se pudo enviar el hash` | Flujo inactivo o certificado rechazado | Activar el flujo; revisar que `N8N_WEBHOOK_URL` use `nutrianimales.local` |
+| Llega el JSON pero no pasa nada | Token distinto entre el script y N8N | Tras cambiar `HASH_WEBHOOK_TOKEN`, `docker compose up -d n8n` |
+| Aviso *Found orphan containers* | Normal: Loki y Alloy están en otro archivo | **No** usar `--remove-orphans` |

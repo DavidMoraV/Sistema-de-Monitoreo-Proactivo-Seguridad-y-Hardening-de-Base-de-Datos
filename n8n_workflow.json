@@ -1,0 +1,210 @@
+[
+  {
+    "name": "Proyecto II · Detección de cambios en sshd_config (C1 y C2)",
+    "nodes": [
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "hash-sshd",
+          "options": {}
+        },
+        "id": "507a62ed-7570-4eae-9909-27a5f36afdeb",
+        "name": "Webhook",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2,
+        "position": [
+          0,
+          0
+        ],
+        "webhookId": "05d9248b-dcc4-4a76-b139-51e6bd1a5c25"
+      },
+      {
+        "parameters": {
+          "jsCode": "// Comparación de hash: compara el hash recibido con la línea base registrada\nconst entrada = $input.first().json;\nconst body = entrada.body || entrada;\nconst hash = String(body.hash_sshd || '').trim().toLowerCase();\nconst base = String($env.SSHD_BASELINE_HASH || '').trim().toLowerCase();\nif (!/^[a-f0-9]{64}$/.test(hash)) throw new Error('El campo hash_sshd no es un SHA-256 válido');\nif (!/^[a-f0-9]{64}$/.test(base)) throw new Error('Falta SSHD_BASELINE_HASH en el .env');\nreturn [{ json: {\n  hash, base,\n  cambio: hash !== base,\n  host: body.host || 'nutrianimales-srv01',\n  timestamp: body.timestamp || new Date().toISOString()\n} }];\n"
+        },
+        "id": "bd0b288a-3767-4d76-8942-0a60f5df300e",
+        "name": "Comparación de hash",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          240,
+          0
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "// HTTP a GLPI: consulta si hay un Change aprobado y crea o cierra el incidente\nconst d = $input.first().json;\nconst API = $env.GLPI_API_URL;\nconst base = { 'Content-Type': 'application/json' };\nif ($env.GLPI_APP_TOKEN && $env.GLPI_APP_TOKEN !== '__cambiar__') base['App-Token'] = $env.GLPI_APP_TOKEN;\nconst req = (method, path, body, extra = {}) =>\n  this.helpers.httpRequest({ method, url: API + path, headers: { ...base, ...extra }, body, json: true });\n\nconst corto = h => h ? h.slice(0, 8) + '…' + h.slice(-4) : '—';\nconst fecha = iso => new Date(iso).toLocaleString('es-CR', { timeZone: 'America/Costa_Rica', hour12: false });\nfunction msg(tipo, titulo, sev, norma, valor, accion, ticket) {\n  return [\n    `🚨 ALERTA ${tipo} · ${titulo}`,\n    'NutriAnimales S.A. | Proyecto II · BCD 9220',\n    `Tipo: ${titulo}`,\n    `Fecha: ${fecha(d.timestamp)}`,\n    `Host: ${d.host}`,\n    `Valor detectado: ${valor}`,\n    `Severidad: ${sev}`,\n    `Norma: ${norma}`,\n    `Acción sugerida: ${accion}`,\n    `Ticket GLPI: ${ticket ? '#' + ticket : 'sin ticket'}`\n  ].join('\\n');\n}\n\nconst ses = await req('GET', '/initSession', undefined, { Authorization: 'user_token ' + $env.GLPI_USER_TOKEN });\nbase['Session-Token'] = ses.session_token;\nconst TITULO = 'Cambio no autorizado en sshd_config · ' + d.host;\nconst valorHash = `hash ${corto(d.hash)} (línea base ${corto(d.base)})`;\nconst out = [];\ntry {\n  // ID de la categoría \"Seguridad > Cambio de configuración\" (variable GLPI_CATEGORIA_ID del .env)\n  let catId = Number($env.GLPI_CATEGORIA_ID || 0);\n  if (!catId) {\n    const cats = await req('GET', '/ITILCategory?range=0-500').catch(() => []);\n    const cat = (Array.isArray(cats) ? cats : []).find(c => c.name === 'Cambio de configuración');\n    catId = cat ? cat.id : 0;\n  }\n  const comps = await req('GET', '/Computer?range=0-999');\n  const srv = comps.find(c => c.name === d.host);\n  const tickets = await req('GET', '/Ticket?range=0-200&sort=id&order=DESC');\n  const abierto = tickets.find(t => t.name === TITULO && Number(t.status) < 5);\n\n  if (d.cambio) {\n    // ¿Existe un Change aprobado y todavía no aplicado para este servidor?\n    let aprobado = null;\n    if (srv) {\n      const links = await req('GET', `/Computer/${srv.id}/Change_Item`).catch(() => []);\n      for (const l of (Array.isArray(links) ? links : [])) {\n        const ch = await req('GET', `/Change/${l.changes_id}`);\n        if (Number(ch.global_validation) === 3 && ![5, 6, 13, 14].includes(Number(ch.status))) { aprobado = ch; break; }\n      }\n    }\n    if (aprobado) {\n      out.push({ json: { alerta: 'C1', ticket: null, texto: msg('C1', 'Cambio en configuración crítica', 'MEDIA', 'ISO/IEC 27001 A.8.9',\n        valorHash, `Cambio cubierto por el Change #${aprobado.id} aprobado. Al terminar, registrar el nuevo hash como línea base.`, null) } });\n    } else if (!abierto) {\n      const content = [\n        'Alerta C1/C2 generada automáticamente por N8N.',\n        `Host: ${d.host}`,\n        `Fecha de detección: ${d.timestamp}`,\n        `Hash detectado: ${d.hash}`,\n        `Hash de línea base: ${d.base}`,\n        'Change aprobado en GLPI: No',\n        'Severidad: Crítica · SLA de resolución: 1 hora',\n        'Acción sugerida: verificar el cambio, registrar y aprobar un Change o revertir la configuración a la línea base.',\n        'Controles: ISO/IEC 27001 A.8.9, A.8.32 y A.5.26.'\n      ].join('<br>');\n      const input = { name: TITULO, content, type: 1, urgency: 5, impact: 5, itilcategories_id: catId };\n      if (srv) input.items_id = { Computer: [srv.id] };\n      const t = await req('POST', '/Ticket', { input });\n      out.push({ json: { alerta: 'C1', ticket: t.id, texto: msg('C1', 'Cambio en configuración crítica', 'CRÍTICA', 'ISO/IEC 27001 A.8.9',\n        valorHash, 'Verificar quién modificó sshd_config y comparar el archivo contra la línea base.', t.id) } });\n      out.push({ json: { alerta: 'C2', ticket: t.id, texto: msg('C2', 'Cambio sin ticket aprobado', 'CRÍTICA', 'ISO/IEC 27001 A.8.32 · ITIL habilitación de cambios',\n        'No existe un Change aprobado en GLPI para ' + d.host, 'Registrar y aprobar un Change en GLPI o revertir sshd_config a la línea base. SLA de resolución: 1 hora.', t.id) } });\n    }\n    // Si ya hay un incidente abierto por este cambio, no se repiten las alertas.\n  } else if (abierto) {\n    await req('POST', '/ITILFollowup', { input: { itemtype: 'Ticket', items_id: abierto.id,\n      content: `Cierre automático por N8N: el hash de sshd_config volvió a la línea base (${corto(d.hash)}).` } });\n    await req('PUT', `/Ticket/${abierto.id}`, { input: { status: 6 } });\n    out.push({ json: { alerta: 'CIERRE', ticket: abierto.id, texto: [\n      `✅ Incidente #${abierto.id} cerrado automáticamente`,\n      'NutriAnimales S.A. | Proyecto II · BCD 9220',\n      `Fecha: ${fecha(d.timestamp)}`,\n      `Host: ${d.host}`,\n      `Valor detectado: hash ${corto(d.hash)} = línea base`,\n      'Acción: registrar el Problem con la causa raíz en GLPI.'\n    ].join('\\n') } });\n  }\n} finally {\n  await req('GET', '/killSession').catch(() => {});\n}\nreturn out;\n"
+        },
+        "id": "b905ff77-0b7d-4718-9699-f42bddd55e1c",
+        "name": "HTTP a GLPI",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          480,
+          0
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+          "sendBody": true,
+          "bodyParameters": {
+            "parameters": [
+              {
+                "name": "chat_id",
+                "value": "={{ $env.TELEGRAM_CHAT_ID }}"
+              },
+              {
+                "name": "text",
+                "value": "={{ $json.texto }}"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "111e4213-6fa2-4a1c-b3c7-dc94baaed25b",
+        "name": "Telegram",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          720,
+          0
+        ]
+      }
+    ],
+    "connections": {
+      "Webhook": {
+        "main": [
+          [
+            {
+              "node": "Comparación de hash",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Comparación de hash": {
+        "main": [
+          [
+            {
+              "node": "HTTP a GLPI",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "HTTP a GLPI": {
+        "main": [
+          [
+            {
+              "node": "Telegram",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "timezone": "America/Costa_Rica"
+    }
+  },
+  {
+    "name": "Proyecto II · SLA vencido (C3)",
+    "nodes": [
+      {
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "minutes",
+                "minutesInterval": 1
+              }
+            ]
+          }
+        },
+        "id": "6f599620-feb4-41fd-b3f4-b5279a28e572",
+        "name": "Cada minuto",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.2,
+        "position": [
+          0,
+          0
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "// Buscar SLA vencidos: incidentes críticos abiertos más tiempo que el umbral (alerta C3)\nconst API = $env.GLPI_API_URL;\nconst umbral = Number($env.C3_UMBRAL_MINUTOS || 60);\nconst base = { 'Content-Type': 'application/json' };\nif ($env.GLPI_APP_TOKEN && $env.GLPI_APP_TOKEN !== '__cambiar__') base['App-Token'] = $env.GLPI_APP_TOKEN;\nconst req = (method, path, body, extra = {}) =>\n  this.helpers.httpRequest({ method, url: API + path, headers: { ...base, ...extra }, body, json: true });\nconst fecha = dt => dt.toLocaleString('es-CR', { timeZone: 'America/Costa_Rica', hour12: false });\n// GLPI devuelve las fechas en su zona horaria; por defecto se asume UTC\nconst aFecha = s => new Date(s.replace(' ', 'T') + (($env.GLPI_FECHAS_UTC || 'true') === 'true' ? 'Z' : ''));\n\nconst estado = $getWorkflowStaticData('global');\nestado.alertados = estado.alertados || [];\nconst ses = await req('GET', '/initSession', undefined, { Authorization: 'user_token ' + $env.GLPI_USER_TOKEN });\nbase['Session-Token'] = ses.session_token;\nconst out = [];\ntry {\n  const tickets = await req('GET', '/Ticket?range=0-200&sort=id&order=DESC');\n  const ahora = new Date();\n  for (const t of tickets) {\n    if (!String(t.name).startsWith('Cambio no autorizado en sshd_config') || Number(t.status) >= 5) continue;\n    if (estado.alertados.includes(t.id)) continue;\n    const min = Math.floor((ahora - aFecha(t.date)) / 60000);\n    if (min < umbral) continue;\n    estado.alertados.push(t.id);\n    out.push({ json: { alerta: 'C3', ticket: t.id, texto: [\n      '🚨 ALERTA C3 · SLA vencido',\n      'NutriAnimales S.A. | Proyecto II · BCD 9220',\n      'Tipo: SLA vencido',\n      `Fecha: ${fecha(ahora)}`,\n      `Valor detectado: incidente crítico abierto hace ${min} min (umbral ${umbral} min)`,\n      'Severidad: CRÍTICA',\n      'Norma: ISO/IEC 27001 A.5.26 · ITIL gestión de niveles de servicio',\n      'Acción sugerida: escalar al responsable del SGSI y atender el incidente de inmediato.',\n      `Ticket GLPI: #${t.id}`\n    ].join('\\n') } });\n  }\n} finally {\n  await req('GET', '/killSession').catch(() => {});\n}\nreturn out;\n"
+        },
+        "id": "153ea979-fa83-4e42-ac8a-25a18b6ddc23",
+        "name": "Buscar SLA vencidos en GLPI",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          240,
+          0
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+          "sendBody": true,
+          "bodyParameters": {
+            "parameters": [
+              {
+                "name": "chat_id",
+                "value": "={{ $env.TELEGRAM_CHAT_ID }}"
+              },
+              {
+                "name": "text",
+                "value": "={{ $json.texto }}"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "f3f6f00b-3d0f-46a5-aa11-e790b4a66c7a",
+        "name": "Telegram",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          480,
+          0
+        ]
+      }
+    ],
+    "connections": {
+      "Cada minuto": {
+        "main": [
+          [
+            {
+              "node": "Buscar SLA vencidos en GLPI",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Buscar SLA vencidos en GLPI": {
+        "main": [
+          [
+            {
+              "node": "Telegram",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "timezone": "America/Costa_Rica"
+    }
+  }
+]

@@ -71,6 +71,11 @@ mkdir -p volumes/pgdata volumes/n8n
 sudo chown -R "${UID_N8N}:${UID_N8N}" volumes/n8n
 chmod 700 volumes volumes/n8n
 sudo chmod 700 volumes/pgdata          # PostgreSQL ajusta el dueño (999) al iniciar
+# Proyecto II: GLPI corre como www-data (uid 33) y no puede crear /var/glpi/config en una carpeta de root.
+# Si Docker la crea, queda de root y GLPI se queda reintentando "Permission denied".
+mkdir -p volumes/glpi
+sudo chown 33:33 volumes/glpi
+sudo chmod 700 volumes/glpi
 
 echo "== 3/4  Certificado de Nginx =="
 if [[ -f nginx/certs/nginx.crt ]]; then

@@ -23,6 +23,7 @@ Continuación del Proyecto I. Sobre el mismo stack (Docker, PostgreSQL, N8N, Ngi
 | `n8n/flujos/C3_SLA_vencido.json` | Flujo programado: alerta C3 cuando un incidente crítico supera el SLA. |
 | `n8n_workflow.json` | Export de los dos flujos en un solo archivo (entregable del ZIP). |
 | `scripts/hash_sshd.sh` | Calcula el hash de `sshd_config` y lo envía a N8N con un secreto compartido. |
+| `scripts/cargar_cmdb_glpi.py` | Carga en la CMDB los 7 contenedores y su relación de impacto con el servidor (idempotente). |
 | `.env.example` | Variables nuevas del Proyecto II (al final del archivo). |
 
 ### Decisiones de seguridad (coherentes con el Proyecto I)
@@ -55,7 +56,9 @@ git pull
 bash scripts/preparar_entorno.sh
 ```
 
-`preparar_entorno.sh` no toca lo que ya existe: solo **agrega** al `.env` las variables nuevas del Proyecto II, con `GLPI_DB_PASSWORD` y `HASH_WEBHOOK_TOKEN` generados al azar. `GLPI_APP_TOKEN` y `GLPI_USER_TOKEN` quedan en `__cambiar__` hasta el paso 3.5.
+`preparar_entorno.sh` no toca lo que ya existe: solo **agrega** al `.env` las variables nuevas del Proyecto II, con `GLPI_DB_PASSWORD` y `HASH_WEBHOOK_TOKEN` generados al azar. `GLPI_APP_TOKEN` y `GLPI_USER_TOKEN` quedan en `__cambiar__` hasta el paso 3.5. También crea `volumes/glpi` con dueño `www-data` (uid 33): si la crea Docker queda de root y GLPI no arranca.
+
+Si `git config core.fileMode` es `false` en el clon, Git no aplica el bit de ejecución: `chmod +x scripts/*.sh scripts/*.py`.
 
 La línea `COMPOSE_FILE` hace que `docker compose` use los tres archivos (base, logs y GLPI) sin escribir `-f`.
 
@@ -87,9 +90,11 @@ docker compose ps        # 7 servicios: postgres, n8n, nginx, loki, alloy, glpi_
 
 1. **Configuración → General → pestaña API**
    - Activar **Habilitar API REST** y **Habilitar inicio de sesión con token externo**. Guardar.
-   - **Añadir cliente API:** nombre `n8n`, activo, rango de IP vacío (laboratorio). Guardar y copiar el **Token de aplicación** → `GLPI_APP_TOKEN`.
+   - **Cliente API:** GLPI trae uno llamado *full access from localhost* que solo acepta `127.0.0.1`. Abrirlo (o añadir uno nuevo) y dejarlo así: nombre `n8n`, activo, **IPv4 de `172.18.0.1` a `172.18.255.255`** (la red `nutrianimales-net`: N8N y Nginx llegan desde ahí), IPv6 vacía, marcar **Regenerar** y guardar. Copiar el **Token de aplicación** → `GLPI_APP_TOKEN`.
 2. **Administración → Usuarios → Añadir:** usuario `n8n` (cuenta de servicio, perfil *Technician*, entidad raíz).
-   - En **Claves de acceso remoto**, marcar **Regenerar** junto a **Token de API** y guardar. Copiar el token → `GLPI_USER_TOKEN`.
+   - Sin contraseña: solo entra por la API.
+   - En **Claves de acceso remoto**, marcar **Regenerar** junto a **Token de API**, guardar y, **ya recargada la página**, copiar el token → `GLPI_USER_TOKEN`.
+   - Son dos tokens distintos: `GLPI_APP_TOKEN` (cliente API) y `GLPI_USER_TOKEN` (usuario `n8n`). Si se pega el mismo en las dos líneas, la API responde `user_token seems invalid`.
 3. Guardar ambos tokens en el `.env` y recrear N8N para que los tome:
 
 ```bash
@@ -98,6 +103,8 @@ docker compose up -d n8n
 ```
 
 > Tras recrear N8N, los flujos tardan unos 3 minutos en volver a alertar. No hacerlo justo antes de una demo.
+
+> Idioma: **Mi configuración → Personalización → Idioma: Español** y desactivar el traductor del navegador para este sitio. Con la traducción automática, los desplegables buscan por el texto original y las capturas salen con errores ("Estibador" en vez de "Docker").
 
 ### 3.6 Probar la API
 
@@ -139,22 +146,36 @@ El JSON que envía tiene el formato del enunciado:
 
 ## 4. Configuración funcional en GLPI
 
-| Elemento | Dónde | Qué configurar | Control |
-|---|---|---|---|
-| CMDB | Activos → Computadoras | Servidor `nutrianimales-srv01` (el nombre debe coincidir con `HOST_NAME`) | A.5.9 |
-| Contenedores | Activos → Software o Dispositivos genéricos | Los 7 contenedores del stack, vinculados al servidor (pestaña de relaciones o componentes) | A.5.9 |
-| Categoría | Configuración → Desplegables → Categorías ITIL | `Seguridad > Cambio de configuración`. Su ID va en `GLPI_CATEGORIA_ID` | A.5.26 |
-| SLA | Configuración → Niveles de servicio | Servicio con calendario 24/7. SLA de tiempo de resolución: **crítico 1 h**, alta 4 h, media 8 h, baja 24 h. El ID del crítico va en `GLPI_SLA_CRITICO_ID` | A.5.26 |
-| Regla de SLA | Administración → Reglas → Reglas de negocio para tickets | Si la categoría es *Cambio de configuración* → asignar el SLA crítico (respaldo de la variable anterior) | A.5.26 |
-| Cambios | Asistencia → Cambios | Change vinculado al servidor, con aprobador, plan de reversión y estado *Aplicado* al terminar | A.8.32 |
-| Problemas | Asistencia → Problemas | Problema vinculado al incidente, con causa raíz | ITIL |
+Orden recomendado (cada paso depende del anterior). Los nombres coinciden con la *Guía de configuración de GLPI* del Drive.
+
+| # | Elemento | Dónde | Qué configurar | Control |
+|---|---|---|---|---|
+| 1 | Grupo y usuarios | Administración → Grupos / Usuarios | Grupo `Equipo TI NutriAnimales`; usuario `aprobador` (perfil *Supervisor*); `n8n`, `aprobador` y el administrador dentro del grupo | A.8.32 |
+| 2 | Categorías | Configuración → Desplegables → Asistencia → Categorías ITIL | `Seguridad > Cambio de configuración` (su ID va en `GLPI_CATEGORIA_ID`) y `Auditoría > No conformidad ISO` | A.5.26 |
+| 3 | Calendario | Configuración → Desplegables → Calendarios | `24/7 NutriAnimales`, de lunes a domingo de 00:00 a 24:00 | A.5.26 |
+| 4 | SLA | Configuración → Niveles de servicio | `SLM NutriAnimales` con el calendario anterior y 4 SLA de **tiempo de resolución**: `SLA Crítico · Resolución 1 h` (su ID va en `GLPI_SLA_CRITICO_ID`), Alto 4 h, Medio 8 h y Bajo 24 h | A.5.26 |
+| 5 | Regla del SLA | Administración → Reglas → **Reglas de negocio para tickets** (no la de activos) | `SLA crítico para cambios de configuración`, al agregar: si categoría = *Cambio de configuración* y tipo = *Incidente* → SLA crítico, prioridad muy alta y grupo técnico | A.5.26 |
+| 6 | Servidor | Activos → Computadoras | `nutrianimales-srv01` en minúscula (igual que `HOST_NAME`), tipo *Servidor*, estado *En producción* | A.5.9 |
+| 7 | Contenedores | Pestaña **Virtualización** del servidor y `python3 scripts/cargar_cmdb_glpi.py` | Los 7 contenedores como máquinas virtuales del servidor y como computadoras tipo *Contenedor Docker* relacionadas en **Análisis de impacto**. El script pide el token de API del administrador (Mi configuración → Claves de acceso remoto) y no lo guarda | A.5.9 |
+| 8 | Cambios | Asistencia → Cambios | Change vinculado al servidor, aprobado por `aprobador`, con plan de reversión y estado *Aplicado* al terminar | A.8.32 |
+| 9 | Problemas | Asistencia → Problemas | Problema vinculado al incidente y al Change, con causa raíz | ITIL |
+
+Para revisar la configuración sin depender del navegador:
+
+```bash
+docker exec nutri_glpi_db sh -c 'mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE" -e "
+SELECT id, completename FROM glpi_itilcategories; SELECT id, name, type FROM glpi_slas;
+SELECT a.field, a.value FROM glpi_ruleactions a JOIN glpi_rules r ON r.id = a.rules_id WHERE r.name LIKE \"SLA%\";"'
+```
+
+En `glpi_slas`, `type = 0` es tiempo de resolución (1 es tiempo de asignación, que no aplica aquí).
 
 ### Roles del grupo y usuarios en GLPI
 
 | Rol del proyecto | Integrante | Usuario y perfil en GLPI |
 |---|---|---|
-| Infraestructura (GLPI, CMDB, API) | David Mora | `dmora` · Super-Admin |
-| Aprobador de cambios | Por definir | Perfil *Supervisor* (valida Changes) |
+| Infraestructura (GLPI, CMDB, API) | David Mora | Administrador `glpi` · Super-Admin |
+| Aprobador de cambios | Por definir | `aprobador` · *Supervisor* (valida Changes) |
 | Automatización (N8N y script) | Por definir | Cuenta de servicio `n8n` · *Technician* (solo API) |
 | Auditor (auditoría interna) | Cristian Vargas | Perfil *Observer* (solo lectura) |
 
@@ -208,6 +229,10 @@ docker compose up -d
 | `glpi` no arranca y queda esperando | `glpi_db` todavía no está lista | Esperar; `docker compose ps` debe mostrar `glpi_db (healthy)` |
 | `https://<IP>:8444` no carga | El stack se levantó sin `docker-compose.glpi.yml` | Revisar `COMPOSE_FILE` en el `.env` y repetir `docker compose up -d` |
 | La API responde `ERROR_APP_TOKEN_PARAMETERS_MISSING` o similar | Falta el app_token o la API está desactivada | Revisar el paso 3.5 |
+| `ERROR_NOT_ALLOWED_IP` (172.18.0.x) | El cliente API solo acepta 127.0.0.1 | Rango IPv4 `172.18.0.1`–`172.18.255.255` en el cliente API (paso 3.5) |
+| `user_token seems invalid` | Token del usuario mal copiado o igual al app_token | Copiar el token del usuario `n8n` después de guardar (paso 3.5) |
+| `mkdir: cannot create directory '/var/glpi/config'` | `volumes/glpi` quedó de root | `bash scripts/preparar_entorno.sh` o `sudo chown 33:33 volumes/glpi` y `docker compose up -d glpi` |
+| `Permiso denegado` al correr un script | `core.fileMode=false` en el clon | `chmod +x scripts/*.sh scripts/*.py` |
 | El script da `Falta HASH_WEBHOOK_TOKEN` | Variable no agregada al `.env` | `bash scripts/preparar_entorno.sh` |
 | El script da `no se pudo enviar el hash` | Flujo inactivo o certificado rechazado | Activar el flujo; revisar que `N8N_WEBHOOK_URL` use `nutrianimales.local` |
 | Llega el JSON pero no pasa nada | Token distinto entre el script y N8N | Tras cambiar `HASH_WEBHOOK_TOKEN`, `docker compose up -d n8n` |

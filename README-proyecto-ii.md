@@ -170,6 +170,22 @@ SELECT a.field, a.value FROM glpi_ruleactions a JOIN glpi_rules r ON r.id = a.ru
 
 En `glpi_slas`, `type = 0` es tiempo de resolución (1 es tiempo de asignación, que no aplica aquí).
 
+**Después de crear la categoría y el SLA, sus IDs van al `.env` y N8N se recrea.** `preparar_entorno.sh` deja ambas variables en `0`; con `0`, N8N crea el incidente sin categoría ni SLA, y la regla de negocio tampoco se aplica (pasó en el estudio de caso con los tickets #1 y #2). Con los IDs de la consulta anterior:
+
+```bash
+sed -i -E '/^\s*#?\s*(GLPI_CATEGORIA_ID|GLPI_SLA_CRITICO_ID)=/d' .env
+printf 'GLPI_CATEGORIA_ID=2\nGLPI_SLA_CRITICO_ID=1\n' >> .env      # usar los IDs propios
+docker compose up -d n8n
+docker compose exec n8n printenv GLPI_CATEGORIA_ID GLPI_SLA_CRITICO_ID   # debe mostrar los IDs, no 0
+```
+
+Para confirmar que un incidente quedó con categoría y SLA (los dos deben ser distintos de `0`):
+
+```bash
+docker exec nutri_glpi_db sh -c 'mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE" -e "
+SELECT id, itilcategories_id, slas_id_ttr, time_to_resolve FROM glpi_tickets ORDER BY id DESC LIMIT 3;"'
+```
+
 ### Roles del grupo y usuarios en GLPI
 
 | Rol del proyecto | Integrante | Usuario y perfil en GLPI |
@@ -237,3 +253,6 @@ docker compose up -d
 | El script da `no se pudo enviar el hash` | Flujo inactivo o certificado rechazado | Activar el flujo; revisar que `N8N_WEBHOOK_URL` use `nutrianimales.local` |
 | Llega el JSON pero no pasa nada | Token distinto entre el script y N8N | Tras cambiar `HASH_WEBHOOK_TOKEN`, `docker compose up -d n8n` |
 | Aviso *Found orphan containers* | Normal: Loki y Alloy están en otro archivo | **No** usar `--remove-orphans` |
+| El incidente se crea sin categoría ni SLA (TTR vacío) | `GLPI_CATEGORIA_ID` o `GLPI_SLA_CRITICO_ID` siguen en `0` | Poner los IDs en el `.env` y `docker compose up -d n8n` (sección 4) |
+| El login de N8N falla con *Origin header does NOT match* | Nginx reenviaba el Host sin el puerto 8443 | `nginx.conf` ya usa `$http_host`; tras actualizar, `docker compose restart nginx` |
+| `502` en 8443 justo después de recrear N8N | N8N todavía arrancando | Esperar 1–3 min; `nginx.conf` vuelve a resolver la IP de N8N cada 30 s |
